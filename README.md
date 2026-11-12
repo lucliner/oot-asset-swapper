@@ -1,5 +1,9 @@
 # Asset Swapper
 
+![A swapped player model in game](docs/img/peter-in-game.jpg)
+
+*A third-party model (not included in this repo) replacing the child player in game.*
+
 A desktop tool that replaces the Player and NPC models in **Sheikah Native** (*The Legend of Zelda: Ocarina of Time*, Switch 2, static recompilation) with models from other games, **as a mod**. The game's own files and executable are never modified: the tool reads your romfs and writes only a mod folder.
 
 > This repo contains no game data and no third-party models. You need your own copy of the game, and you are responsible for the licence of any model you import.
@@ -10,12 +14,12 @@ A desktop tool that replaces the Player and NPC models in **Sheikah Native** (*T
 - **Auto-retarget** a rigged model onto the game's skeleton, keeping its skin weights, so the game's animations drive it. Unrigged models get automatic weights.
 - **Manual correction UI** (Tk): bone map, part-to-shape map, textures, fit and attachments, equipment.
 - **Textures** are re-encoded (BC1/ASTC) in place into the game's own texture files, including every mip level.
-- **Fixes for imported models**: back-face winding repair, gap-closing parts merged into the main mesh (`merge_parts`), shield/sword clipping (`flatten_back`), arm-only skeleton fitting (`fit_skeleton`), zigzag-free elbows (`arm_stiffness`).
+- **Fixes for imported models**: back-face winding repair, gap-closing parts merged into the main mesh (`merge_parts`), shield/sword clipping (`flatten_back`), arm-only skeleton fitting (`fit_skeleton`), zigzag-free elbows (`arm_stiffness`), longer arms (`arm_length`), armpit relief, hidden worn equipment.
 - **Backups and revert**: every build backs up the previous mod; switch mods on/off or restore from the *Backups & revert* tab.
 
 ## Quick start (Windows)
 
-1. Download `AssetSwapper-v1.0.0-win64.zip` from [Releases](../../releases), unzip anywhere.
+1. Download `AssetSwapper-v1.1.0-win64.zip` from [Releases](../../releases), unzip anywhere.
 2. Run `Asset Swapper.exe`; point it at your Sheikah game folder if asked.
 3. Pick the model to **Replace** (`Player_Child`, `Player_Adult`, an NPC) and **With model**, then *Load*.
 4. Fix the bone map / parts / textures if needed, then **Build mod**.
@@ -46,7 +50,8 @@ Output goes to `dist\Asset Swapper\`.
 
 ## Known limits
 
-- Child face texture is 12x12 ASTC, so eyes look blocky; body texture has some edge roughness.
+- Child face texture is 12x12 ASTC, so fine detail is coarse; body texture has some edge roughness.
+- With straight arms the held sword floats near the hand (see `hand_follows_wrist`).
 - Shapes keep the game's materials; normal/roughness/occlusion maps are neutral.
 - Poses beyond walking and jumping (roll, climb, swim) are lightly tested.
 

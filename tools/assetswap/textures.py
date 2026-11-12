@@ -53,7 +53,12 @@ def albedo_name(f, mat_index):
 
 def kind_of(name):
     suffix = name.rsplit('_', 1)[-1]
-    return suffix if suffix in ('Alb', 'Nrm', 'Rgh', 'AO', 'Mtl', 'Emm') else None
+    return suffix if suffix in ('Alb', 'Nrm', 'Rgh', 'AO', 'Mtl', 'Emm', 'Thc', 'Gn2') else None
+
+
+# Link's skin carries two more maps laid out on his own UVs (thickness and a gradient map): left alone they print his
+# layout over an imported model's face as blocks and stripes. One flat colour, the median of Link's own map.
+FLAT_MAPS = {'Thc': (14, 0, 0, 255), 'Gn2': (178, 216, 0, 255)}
 
 
 def neutral_pixels(kind, channels, size=4):
@@ -142,6 +147,8 @@ def build(rom, f, slot_textures, log=print, geometry=None):
                 if geometry and si in geometry and geometry[si][0] is not None:
                     pix = pix.copy()
                     pix[..., :3] = pad_unused(pix[..., :3], *geometry[si])    # no island-edge blocks full of background
+            elif kind in FLAT_MAPS:
+                pix = np.broadcast_to(np.array(FLAT_MAPS[kind], np.uint8), (1, 1, 4)).copy()
             else:
                 pix = neutral_pixels(kind, d.channels, 1)
             new = bntx_flat.make_inplace(donor, pix, detail=(kind == 'Alb'))

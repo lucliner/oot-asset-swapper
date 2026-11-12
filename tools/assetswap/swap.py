@@ -29,6 +29,13 @@ import retarget
 # shapes whose materials need special shading (alpha, hair, face and eye effects) make poor hosts for an opaque body
 AVOID = re.compile(r'eye|lash|brow|hair|teeth|tongue|lip|face|alpha|softedge|shadow|feather', re.I)
 WEAPON_BONES = {'L': 'Weapon_L', 'R': 'Weapon_R'}
+# worn equipment drawn on top of Link's body: hidden under a new skin (only weapons and shields stay); profile
+# hide_worn false keeps them
+WORN_EQUIPMENT = ['Item_Gauntlet_Goron', 'Armor_Adult_Gauntlet_Gold', 'Armor_Adult_Gauntlet_Silver', 'Armor_Adult_HeavyBoot',
+                  'Armor_Adult_HoverBoot', 'Armor_Adult_Goron', 'Armor_Adult_Zora', 'Item_AgonyStone']
+HELD_MODELS = {'R': ['Weapon_Sword_Kokiri', 'Weapon_Sword_Master', 'Weapon_Sword_Master_Dark', 'Weapon_Sword_Biggoron',
+                      'Weapon_Sword_BrokenBiggoron', 'Item_DekuStick', 'Item_Hammer'],
+               'L': ['Weapon_Range_Bow', 'Weapon_Range_SlingShot']}
 EQUIPMENT_PODS = ('Pod_A', 'Pod_B')          # where the shield and the sword are mounted on Link's back
 
 
@@ -276,7 +283,10 @@ class Plan:
                     log('  %d triangles wound against their normals were turned round' % bad.sum())
             self.slots[si] = SlotMesh(pos.astype(np.float32), tris, j, w, nrm, uv, texture=tex, uv_float=need_float)
             log('  %-30s -> shape %2d %-36s (%d verts, %d tris)' % (m.name[:30], si, f.shapes[si].name[:36], len(pos), len(m.tris)))
+        self._stretch_arms()
+        self._palms()
         self._flatten_back()
+        self._armpit_relief()
         self._stiffen_arms()
         self._fit_skeleton()
         self._attachments()
@@ -390,6 +400,189 @@ class Plan:
         if pressed:
             self.log('  back of the torso pressed in at %d vertices (to the depth of Links own back)' % pressed)
 
+    def _joint_targets(self):
+        """{game bone index: where the model's own joint for it ended up in the fitted mesh}."""
+        out = {}
+        if self.rig is None or self.T is None:
+            return out
+        for i, g in enumerate(self.own):
+            if g is not None and g in self.T and g not in out:
+                out[g] = (self.T[g] @ (self.M @ np.append(self.rig.position(i), 1.0)))[:3]
+        return out
+
+    def _arm_chain(self, side):
+        """(shoulder bone, set of smooth indices of the arm: upper arm, forearm, hand and fingers)."""
+        f = self.f
+        names = {b.name: b for b in f.bones}
+        a1 = names.get('Arm_1_' + side)
+        if a1 is None:
+            return None, set()
+        kids = {a1.index}
+        for b in f.bones:
+            if b.parent in kids:
+                kids.add(b.index)
+        return a1, {f.bones[i].smooth for i in kids if f.bones[i].smooth >= 0}
+
+    def _stretch_arms(self):
+        """Longer (or shorter) arms for a model whose proportions the game's rig is too small for (profile arm_length,
+        1 = as the model has them): everything on the arm beyond the shoulder is moved out along the arm's own direction
+        in proportion to its distance from the shoulder, and the arm bones are placed at the stretched joints."""
+        k = float(self.profile.get('arm_length', 1.0))
+        self.arm_stretch = {}
+        if abs(k - 1.0) < 1e-3 or not self.slots:
+            return
+        tg = self._joint_targets()
+        names = {b.name: b for b in self.f.bones}
+        for side in ('L', 'R'):
+            a1, chain = self._arm_chain(side)
+            wr = names.get('Wrist_' + side)
+            if a1 is None or wr is None or a1.index not in tg or wr.index not in tg:
+                continue
+            S = tg[a1.index]
+            u = tg[wr.index] - S
+            u /= np.linalg.norm(u) + 1e-12
+            self.arm_stretch[side] = (S, u, k)
+            for sl in self.slots.values():
+                wts = np.asarray(sl.weights, np.float64)
+                armw = (wts * np.isin(np.asarray(sl.joints), list(chain))).sum(1)
+                P = np.asarray(sl.pos, np.float64)
+                along = np.maximum((P - S) @ u, 0.0)
+                P = P + (k - 1.0) * (along * armw)[:, None] * u[None, :]
+                sl.pos = P.astype(np.float32)
+        self.log('  arms lengthened x%.2f' % k)
+
+    def _stretch_point(self, side, p):
+        if side not in self.arm_stretch:
+            return p
+        S, u, k = self.arm_stretch[side]
+        return p + (k - 1.0) * max(float((p - S) @ u), 0.0) * u
+
+    def _palms(self):
+        """Where each hand is, measured before the arm weights are stiffened: the centre of the outer half of the vertices
+        carried by the wrist and finger bones. The sword and the other held weapons are mounted there."""
+        self.palm = {}
+        self.palm_link = {}
+        self.W0 = [m.copy() for m in self.W]              # the game's own skeleton, before any fitting
+        if not self.slots:
+            return
+        names = {b.name: b for b in self.f.bones}
+        for side in ('L', 'R'):
+            a1, chain = self._arm_chain(side)
+            wr = names.get('Wrist_' + side)
+            e2 = names.get('Arm_2_' + side)
+            if a1 is None or wr is None or e2 is None:
+                continue
+            hand = {self.f.bones[i].smooth for i in range(len(self.f.bones))
+                    if self.f.bones[i].smooth >= 0 and self.f.bones[i].name.startswith(('Wrist', 'Weapon')) and self.f.bones[i].name.endswith('_' + side)}
+            pts = []
+            for sl in self.slots.values():
+                wts = np.asarray(sl.weights)
+                dom = np.argmax(wts, axis=1)
+                jn = np.asarray(sl.joints)[np.arange(len(dom)), dom]
+                sel = np.isin(jn, list(hand)) & (wts[np.arange(len(dom)), dom] > 0.5)
+                if sel.any():
+                    pts.append(np.asarray(sl.pos, np.float64)[sel])
+            if not pts:
+                continue
+            pts = np.concatenate(pts)
+            e = self._joint_targets().get(e2.index)
+            e = self.W[e2.index][:3, 3] if e is None else self._stretch_point(side, e)
+            d = np.linalg.norm(pts - e, axis=1)
+            outer = pts[d >= np.median(d)]
+            self.palm[side] = outer.mean(0)
+            # the same measure on the game's own character: where its hand is, so the weapon keeps Link's grip on it
+            lp = []
+            for sh in self.f.shapes:
+                if not sh.vertex_count or sh.skin_count <= 1 or self.f.attr(sh, '_i0') is None or self.f.attr(sh, '_w0') is None:
+                    continue
+                ii = self.f.read_attr(sh, '_i0')
+                ww = self.f.read_attr(sh, '_w0')
+                dom = ii[np.arange(len(ii)), np.argmax(ww, axis=1)]
+                bone = np.array([self.f.bone_of_matrix(int(m)) for m in dom])
+                ok = np.array([self.f.bones[b].name.startswith(('Wrist', 'Finger')) and self.f.bones[b].name.endswith('_' + side) for b in bone])
+                if ok.any():
+                    lp.append(np.asarray(self.f.read_attr(sh, '_p0'), np.float64)[ok][:, :3])
+            if lp:
+                lp = np.concatenate(lp)
+                e0 = self.W0[e2.index][:3, 3]
+                dd = np.linalg.norm(lp - e0, axis=1)
+                self.palm_link[side] = lp[dd >= np.median(dd)].mean(0)
+
+    def _armpit_relief(self):
+        """Vertices of the torso that the model's weights hand to the arm (the chest and ribs under the sleeve) follow the
+        arm when the game's animation swings it down, which sucks the armpit in. Everything farther from the arm's axis
+        than the arm itself is thick gives its arm weight back to the spine (profile armpit_relief, default 1; 0 = off)."""
+        k = float(self.profile.get('armpit_relief', 1.0))
+        if k <= 0 or not self.slots or self.rig is None or self.T is None:
+            return
+        names = {b.name: b for b in self.f.bones}
+        spine = names.get('Spine_2')
+        if spine is None or spine.smooth < 0:
+            return
+        tg = self._joint_targets()
+        total = 0
+        for side in ('L', 'R'):
+            a1, chain = self._arm_chain(side)
+            e2, wr, cl = names.get('Arm_2_' + side), names.get('Wrist_' + side), names.get('Clavicle_' + side)
+            if a1 is None or e2 is None or wr is None or a1.index not in tg or e2.index not in tg or wr.index not in tg:
+                continue
+            S, E, Wr = tg[a1.index], self._stretch_point(side, tg[e2.index]), self._stretch_point(side, tg[wr.index])
+            if side in self.arm_stretch:
+                S = tg[a1.index]
+            sign = 1.0 if S[0] >= 0 else -1.0
+
+            def dist(P):
+                d = np.full(len(P), 1e9)
+                for A, B, last in ((S, E, False), (E, Wr, True)):
+                    ab = B - A
+                    t = np.maximum(((P - A) @ ab) / (ab @ ab + 1e-12), 0)       # the hand and fingers lie on the line beyond the wrist
+                    if not last:
+                        t = np.minimum(t, 1)
+                    d = np.minimum(d, np.linalg.norm(P - (A + t[:, None] * ab), axis=1))
+                return d
+            fore = [self.f.bones[i].smooth for i in range(len(self.f.bones)) if self.f.bones[i].smooth >= 0 and self.f.bones[i].name.startswith(('Arm_2', 'Wrist', 'Finger')) and self.f.bones[i].name.endswith('_' + side)]
+            cyl = []
+            for sl in self.slots.values():
+                wts = np.asarray(sl.weights)
+                dom = np.asarray(sl.joints)[np.arange(len(wts)), np.argmax(wts, axis=1)]
+                m = np.isin(dom, fore)
+                if m.any():
+                    P = np.asarray(sl.pos, np.float64)[m]
+                    cyl.append(dist(P))
+            if not cyl:
+                continue
+            r = float(np.percentile(np.concatenate(cyl), 85))
+            band = 0.05 * k + 1e-6
+            sel_ids = list(chain) + ([cl.smooth] if cl is not None and cl.smooth >= 0 else [])
+            for sl in self.slots.values():
+                J = np.asarray(sl.joints).copy()
+                Wt = np.asarray(sl.weights, np.float64).copy()
+                P = np.asarray(sl.pos, np.float64)
+                d = dist(P)
+                t = np.clip((d - r) / band, 0, 1) * (np.sign(P[:, 0]) == sign) * (np.abs(P[:, 0]) < abs(S[0]) + 0.10)      # only the body beside the shoulder, not the hand
+                for row in np.where(t > 0)[0]:
+                    mv = 0.0
+                    for c in range(J.shape[1]):
+                        if int(J[row, c]) in sel_ids and Wt[row, c] > 0:
+                            q = Wt[row, c] * t[row]
+                            Wt[row, c] -= q
+                            mv += q
+                    if mv <= 0:
+                        continue
+                    hit = np.where((J[row] == spine.smooth) & (Wt[row] > 0))[0]
+                    if len(hit):
+                        Wt[row, hit[0]] += mv
+                    else:
+                        free = np.where(Wt[row] <= 1e-9)[0]
+                        c = free[0] if len(free) else int(np.argmin(Wt[row]))
+                        J[row, c] = spine.smooth
+                        Wt[row, c] = mv
+                    Wt[row] /= Wt[row].sum()
+                    total += 1
+                sl.joints = J.astype(np.asarray(sl.joints).dtype)
+                sl.weights = Wt.astype(np.float32)
+        self.log('  armpits relieved at %d vertices' % total)
+
     def _stiffen_arms(self):
         """Part of the weight of the forearm and hand moves to the upper arm (profile arm_stiffness, 0..1, default 0.6):
         the game's animations bend the elbow and wrist by their own, Link-sized amounts, which on a thicker, shorter arm
@@ -399,6 +592,9 @@ class Plan:
             return
         names = {b.name: b for b in self.f.bones}
         pair = {}
+        hand = float(self.profile.get('hand_follows_wrist', 0.0))       # 0 = hand stiff with the arm (straight arms), 1 = hand turns with the wrist (sword stays in it, arms bend)
+        wrist_of = {}                          # smooth index of a wrist bone -> (wrist joint, direction of the forearm)
+        tg = self._joint_targets()
         for side in ('L', 'R'):
             a1 = names.get('Arm_1_' + side)
             if a1 is None or a1.smooth < 0:
@@ -407,6 +603,11 @@ class Plan:
                 b = names.get(n)
                 if b is not None and b.smooth >= 0:
                     pair[b.smooth] = a1.smooth
+            e2, wr = names.get('Arm_2_' + side), names.get('Wrist_' + side)
+            if e2 is not None and wr is not None and e2.index in tg and wr.index in tg:
+                Wj, Ej = self._stretch_point(side, tg[wr.index]), self._stretch_point(side, tg[e2.index])
+                u = Wj - Ej
+                wrist_of[wr.smooth] = (Wj, u / (np.linalg.norm(u) + 1e-12))
         if not pair:
             return
         moved = 0
@@ -420,6 +621,10 @@ class Plan:
                     j = int(J[r, c])
                     if j in pair and Wt[r, c] > 0:
                         t = Wt[r, c] * s_
+                        if j in wrist_of:
+                            # the hand turns with the wrist, so a sword mounted there stays in it: only the forearm end is stiffened
+                            Wj, u = wrist_of[j]
+                            t *= 1.0 - hand * float(np.clip(((np.asarray(sl.pos[r], np.float64) - Wj) @ u) / 0.05, 0.0, 1.0))
                         Wt[r, c] -= t
                         add[pair[j]] = add.get(pair[j], 0.0) + t
                 for j, t in add.items():
@@ -457,6 +662,9 @@ class Plan:
             if g is not None and g in self.T and g not in target and (only is None or self.f.bones[g].name.startswith(only)):
                 J = self.M @ np.append(self.rig.position(i), 1.0)
                 target[g] = (self.T[g] @ J)[:3]
+                nm = self.f.bones[g].name
+                if nm[-2:] in ('_L', '_R') and nm.startswith(('Arm_2', 'Wrist')):
+                    target[g] = self._stretch_point(nm[-1], target[g])
         if not target:
             return
         from skeleton import euler_matrix
@@ -569,27 +777,22 @@ class Plan:
             return
         if spec != 'auto':
             return
+        # The animations set the weapon bones' positions, so moving the bones does nothing in game. The held models
+        # (swords, the hammer, the bow...) are shifted instead: each side's model is moved, in its bone's own frame, by
+        # the distance from where the game's weapon point ends up on this skeleton to the centre of the model's hand.
+        self.weapon_delta = {}
         for side, wname in WEAPON_BONES.items():
-            wrist, elbow, weapon = names.get('Wrist_' + side), names.get('Arm_2_' + side), names.get(wname)
-            if not (wrist and elbow and weapon):
+            wrist, weapon = names.get('Wrist_' + side), names.get(wname)
+            if not (wrist and weapon) or side not in getattr(self, 'palm', {}):
                 continue
-            pts = []
-            for sl in self.slots.values():
-                dom = np.argmax(np.asarray(sl.weights), axis=1)
-                jn = np.asarray(sl.joints)[np.arange(len(dom)), dom]
-                sel = (jn == wrist.smooth) & (np.asarray(sl.weights)[np.arange(len(dom)), dom] > 0.5)
-                if sel.any():
-                    pts.append(np.asarray(sl.pos, np.float64)[sel])
-            if not pts:
+            if side not in self.palm_link:
                 continue
-            pts = np.concatenate(pts)
-            e = W[elbow.index][:3, 3]
-            far = np.linalg.norm(pts - e, axis=1)
-            tip = pts[np.argsort(far)[-max(1, len(pts) // 25):]].mean(0)       # the outermost few percent
-            point = e + (tip - e) * 0.9                                           # a little inside the end
-            local = np.linalg.inv(W[weapon.parent]) @ np.append(point, 1.0)
-            self.bone_positions[weapon.index] = tuple(float(x) for x in local[:3])
-            self.log('  %s moved to the end of the %s limb' % (wname, side))
+            # Link's grip carried onto the fitted wrist: that is where the game holds the weapon on this skeleton
+            where = (W[wrist.index] @ np.linalg.inv(self.W0[wrist.index]) @ np.append(self.palm_link[side], 1.0))[:3]
+            R = W[weapon.index][:3, :3]
+            R = R / (np.linalg.norm(R, axis=0, keepdims=True) + 1e-12)
+            self.weapon_delta[side] = R.T @ (self.palm[side] - where)
+            self.log('  %s: held models shifted %.1f cm to the hand of the model' % (wname, np.linalg.norm(self.palm[side] - where) * 100))
 
     def overlays(self):
         """Lines/points for the preview: the game's body bones (cyan) and, for a rigged source, each mapped joint's fitted
@@ -628,7 +831,13 @@ class Plan:
         back = Bfres(rom.decompress(open(dest, 'rb').read()))
         assert len(back.shapes) == len(f.shapes) and [b.name for b in back.bones] == [b.name for b in f.bones]
         log('wrote %s (%d bytes; the original is %d)' % (dest, len(packed), os.path.getsize(rom.path(self.target_rel))))
-        for rel in self.profile.get('hide_models') or []:
+        hide = list(self.profile.get('hide_models') or [])
+        if self.profile.get('hide_worn', True):
+            for n in WORN_EQUIPMENT:
+                rel = 'Model/%s.%s.bfres.zs' % (n, n)
+                if rel not in hide and os.path.exists(rom.path(rel)):
+                    hide.append(rel)
+        for rel in hide:
             try:
                 data = patch_model(rom.read(rel), {})
             except Exception as e:                                   # a model this writer cannot read is left alone
@@ -638,6 +847,18 @@ class Plan:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, 'wb').write(rom.compress(data, dict_name=rom.dict_of(rel)))
             log('  hidden: %s' % rel)
+        if self.profile.get('shift_held', False):
+            for side, d in getattr(self, 'weapon_delta', {}).items():
+                for rel in self._held_files(side):
+                    try:
+                        data = self._shift_model(rom.read(rel), d)
+                    except Exception as e:
+                        log('  could not move %s: %s' % (rel, e))
+                        continue
+                    p = os.path.join(mod_dir, 'romfs', *rel.split('/'))
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    open(p, 'wb').write(rom.compress(data, dict_name=rom.dict_of(rel)))
+                    log('  moved to the hand: %s' % rel)
         if textures:
             import textures as tex
             files = tex.build(rom, f, {si: s.texture for si, s in self.slots.items()}, log,
@@ -649,6 +870,35 @@ class Plan:
                     fh.write(data)
             # (the files keep the donors' sizes, so the game's resource size table needs no change)
         return back
+
+    def _held_files(self, side):
+        out = []
+        for stem in HELD_MODELS[side]:
+            d = os.path.dirname(self.rom.path('Model/x'))
+            for fn in sorted(os.listdir(d)):
+                if fn.startswith(stem + '.') and fn.endswith('.bfres.zs') and 'fracture' not in fn and '.anim.' not in fn and 'Arrow' not in fn:
+                    out.append('Model/' + fn)
+        return out
+
+    @staticmethod
+    def _shift_model(data, d):
+        """The model's vertex positions moved by d (its own space) in place; every size and offset stays."""
+        f = Bfres(data)
+        b = bytearray(data)
+        for s in f.shapes:
+            if not s.vertex_count:
+                continue
+            a = f.attr(s, '_p0')
+            info = fmt_info(a.fmt) if a is not None else None
+            if info is None or info[0] not in ('f2', 'f4') or info[1] < 3:
+                raise ValueError('positions are in an unsupported format')
+            dt = np.dtype('<' + info[0])
+            raw = np.frombuffer(b, np.uint8, s.vertex_count * s.stride, s.vb_off).reshape(s.vertex_count, s.stride)
+            size = dt.itemsize * 3
+            pos = raw[:, a.offset:a.offset + size].copy().view(dt).astype(np.float64)
+            pos = pos + np.asarray(d, np.float64)
+            raw[:, a.offset:a.offset + size] = pos.astype(dt).view(np.uint8).reshape(s.vertex_count, size)
+        return bytes(b)
 
     def model_bytes(self):
         return patch_model(self.src, self.slots, bone_positions=self.bone_positions, inv_bind=getattr(self, 'inv_bind', None))

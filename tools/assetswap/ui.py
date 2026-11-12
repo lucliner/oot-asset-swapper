@@ -167,6 +167,9 @@ class App(tk.Tk):
             ttk.Entry(t, textvariable=self.fit[k], width=10).grid(row=18 + r, column=1, sticky='w')
         ttk.Label(t, text='Negative = arms start raised. A body wider than the game character needs it: the idle animation swings the arms down about the shoulder joint, so a wide belly swallows them. Hands too straight: raise the curl.',
                   wraplength=480, foreground='#888').grid(row=20, column=0, columnspan=4, sticky='w')
+        self.fit['arm_length'] = tk.StringVar(value='1.0')
+        ttk.Label(t, text='Arm length (1 = as the model; more = longer arms)').grid(row=21, column=0, sticky='w')
+        ttk.Entry(t, textvariable=self.fit['arm_length'], width=10).grid(row=21, column=1, sticky='w')
 
         # --- equipment
         t = ttk.Frame(nb, padding=6); nb.add(t, text='Backups & revert')
@@ -344,6 +347,7 @@ class App(tk.Tk):
             v = self.fit['arm_drop'].get().strip().lower()
             p['arm_drop'] = 'auto' if v in ('', 'auto') else float(v)
             p['hand_curl'] = float(self.fit['hand_curl'].get() or 0)
+            p['arm_length'] = float(self.fit['arm_length'].get() or 1)
         except ValueError:
             pass
         return p
@@ -360,6 +364,7 @@ class App(tk.Tk):
                 for var, x in zip(self.offs[b], vs):
                     var.set(str(x))
         self.fit['arm_drop'].set(str(p.get('arm_drop', -25))); self.fit['hand_curl'].set(str(p.get('hand_curl', 15)))
+        self.fit['arm_length'].set(str(p.get('arm_length', 1.0)))
         jf = p.get('joint_fit') or {}
         self.fit['body_fit'].set(str(jf.get('default', 0.2))); self.fit['arm_fit'].set(str(jf.get('Arm_', 0.3)))
         a = p.get('attachments', 'auto')

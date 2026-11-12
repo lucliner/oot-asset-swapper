@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0] - 2026-11-11
+
+### Added
+- `arm_length` profile option and an *Arm length* field on the Fit tab: lengthens the arms of models whose proportions are larger than the game's skeleton.
+- Worn equipment (Goron bracelet, gauntlets, boots, Agony Stone) is hidden automatically on a swapped player; weapons and shields still show (`hide_worn`, default on).
+- `armpit_relief`: torso vertices beside the shoulder give their arm weight back to the spine, which removes the sucked-in armpit look (default on).
+- `hand_follows_wrist` (0 to 1, default 0): at 0 the arms stay straight and the held sword sits near the hand; at 1 the sword fits the hand but the arms fold like Link's.
+- `shift_held` (default off): experimental shifted copies of held weapon models.
+- Link's skin thickness and gradient maps (`Thc`, `Gn2`) are written as flat colours so his UV layout no longer shows on an imported face (intended to remove the checkerboard on the face; not yet confirmed in game).
+
+### Changed
+- `arm_stiffness` keeps the hand rigid with the upper arm by default.
+
+### Known issues
+- With straight arms the sword floats near the hand while attacking, because the game attaches it to the animated wrist.
+- Leg textures have not been investigated.
+
 ## [1.0.0] - 2026-11-11
 
 First release.
