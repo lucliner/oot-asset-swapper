@@ -73,8 +73,9 @@ class ModelPicker(tk.Toplevel):
     def __init__(self, parent, romfs, targets, friendly, theme, current=None, on_pick=None):
         super().__init__(parent)
         self.title('Choose the model to replace')
-        self.geometry('1180x740')
-        self.minsize(900, 560)
+        k = max(1.0, float(parent.tk.call('tk', 'scaling')) / 1.333)
+        self.geometry('%dx%d' % (int(1180 * k), int(760 * k)))
+        self.minsize(int(900 * k), int(600 * k))
         self.configure(background=theme['BG'])
         self.transient(parent)
         self.th = theme
@@ -110,6 +111,8 @@ class ModelPicker(tk.Toplevel):
     def _build(self):
         th = self.th
         bar = ttk.Frame(self, padding=(16, 14, 16, 6)); bar.pack(fill='x')
+        self.v_count = tk.StringVar()
+        ttk.Label(bar, textvariable=self.v_count, style='Muted.TLabel').pack(side='right')
         ttk.Label(bar, text='Search', style='Muted.TLabel').pack(side='left')
         self.v_search = tk.StringVar()
         self.search_entry = ttk.Entry(bar, textvariable=self.v_search, width=28)
@@ -123,8 +126,6 @@ class ModelPicker(tk.Toplevel):
         self.v_sort = tk.StringVar(value=SORTS[0])
         cs = ttk.Combobox(bar, textvariable=self.v_sort, values=SORTS, state='readonly', width=20)
         cs.pack(side='left', padx=8); cs.bind('<<ComboboxSelected>>', lambda _e: self.layout())
-        self.v_count = tk.StringVar()
-        ttk.Label(bar, textvariable=self.v_count, style='Muted.TLabel').pack(side='right')
 
         body = ttk.Frame(self, padding=(16, 4, 16, 0)); body.pack(fill='both', expand=True)
         left = ttk.Frame(body); left.pack(side='left', fill='both', expand=True)
@@ -139,21 +140,22 @@ class ModelPicker(tk.Toplevel):
         self.canvas.bind_all('<MouseWheel>', self._wheel)
 
         right = ttk.Frame(body, padding=(14, 0, 0, 0)); right.pack(side='right', fill='y')
+        # what must always be visible is packed first, so a short window cuts the picture, not the button
+        self.btn = ttk.Button(right, text='Use this model', style='Accent.TButton', command=self.choose, state='disabled')
+        self.btn.pack(side='bottom', fill='x', pady=(10, 0))
+        self.v_spin = tk.BooleanVar(value=True)
+        ttk.Checkbutton(right, text='Turn slowly (or drag the picture)', variable=self.v_spin,
+                        command=lambda: setattr(self, 'spin', self.v_spin.get())).pack(side='bottom', anchor='w', pady=(6, 0))
+        self.v_facts = tk.StringVar()
+        ttk.Label(right, textvariable=self.v_facts, style='Muted.TLabel', wraplength=400, justify='left').pack(side='bottom', anchor='w', pady=(4, 0))
+        self.v_name = tk.StringVar(value='Pick a model on the left')
+        ttk.Label(right, textvariable=self.v_name, style='Title.TLabel', wraplength=400).pack(side='bottom', anchor='w', pady=(8, 0))
         self.big = tk.Label(right, background='#0f1115', borderwidth=0, image=self.blank_big)
-        self.big.pack()
+        self.big.pack(side='top')
         for ev, fn in (('<ButtonPress-1>', self._press), ('<B1-Motion>', self._motion), ('<ButtonRelease-1>', self._release)):
             self.big.bind(ev, fn)
-        self.v_name = tk.StringVar(value='Pick a model on the left')
-        ttk.Label(right, textvariable=self.v_name, style='Title.TLabel', wraplength=400).pack(anchor='w', pady=(10, 0))
-        self.v_facts = tk.StringVar()
-        ttk.Label(right, textvariable=self.v_facts, style='Muted.TLabel', wraplength=400, justify='left').pack(anchor='w', pady=(4, 0))
-        self.v_spin = tk.BooleanVar(value=True)
-        ttk.Checkbutton(right, text='Turn slowly', variable=self.v_spin, command=lambda: setattr(self, 'spin', self.v_spin.get())).pack(anchor='w', pady=(8, 0))
-        ttk.Label(right, text='Drag the picture to turn the model.', style='Muted.TLabel').pack(anchor='w')
-        self.btn = ttk.Button(right, text='Use this model', style='Accent.TButton', command=self.choose, state='disabled')
-        self.btn.pack(fill='x', pady=(14, 0))
         self.v_prog = tk.StringVar()
-        ttk.Label(self, textvariable=self.v_prog, style='Muted.TLabel', padding=(16, 6, 16, 10)).pack(anchor='w')
+        ttk.Label(self, textvariable=self.v_prog, style='Muted.TLabel', padding=(16, 6, 16, 10)).pack(anchor='w', side='bottom', before=body)
 
     def _wheel(self, e):
         if self.winfo_exists():

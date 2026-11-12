@@ -8,6 +8,20 @@ A desktop tool that replaces the Player and NPC models in static recompilations 
 
 > This repo contains no game data and no third-party models. You need your own copy of the game, and you are responsible for the licence of any model you import.
 
+## Screenshots
+
+![Main window: a model loaded over the game's skeleton, with its textures](docs/img/ui-main.png)
+
+*Load a model and the preview updates at once, drawn with OpenGL and its own textures.*
+
+![X-ray mode with the original model and the rotate gizmo](docs/img/ui-xray.png)
+
+*X-ray mode: the model turns see-through, the skeleton is drawn solid and its orange joints can be dragged. "Original" shows the game's own model, locked in place, and the Move / Rotate / Scale gizmo fits yours to it (rings turn it about each axis).*
+
+![Model picker](docs/img/ui-picker.png)
+
+*The model picker: every replaceable model as a textured 3D thumbnail, with search, category filter and sort.*
+
 ## Features
 
 - **Model picker** with textured thumbnails, search, filter and sort; **plain names** instead of file paths.

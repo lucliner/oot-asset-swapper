@@ -47,9 +47,44 @@ BODY = [('Head', 'Head', False), ('Neck', 'Neck', False), ('Chest', 'Spine_2', F
         ('Thigh', 'Leg_1', True), ('Shin', 'Leg_2', True), ('Foot', 'Ankle', True), ('Toes', 'Toe', True)]
 
 
+def _indicators(root, st):
+    """Check box and radio button images drawn in the theme's colours, scaled to the screen."""
+    from PIL import Image, ImageDraw
+    k = max(1.0, float(root.tk.call('tk', 'scaling')) / 1.333)
+    n = int(round(18 * k))
+    big = n * 4
+
+    def make(kind, on, hot):
+        im = Image.new('RGBA', (big, big), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        fill = ACCENT if on else FIELD
+        edge = ACCENT_HI if (hot or on) else MUTED
+        box = [big * 0.08, big * 0.08, big * 0.92, big * 0.92]
+        if kind == 'check':
+            d.rounded_rectangle(box, radius=big * 0.18, fill=fill, outline=edge, width=int(big * 0.07))
+            if on:
+                d.line([(big * 0.26, big * 0.52), (big * 0.43, big * 0.68), (big * 0.75, big * 0.32)], fill='#ffffff', width=int(big * 0.13), joint='curve')
+        else:
+            d.ellipse(box, fill=fill, outline=edge, width=int(big * 0.07))
+            if on:
+                d.ellipse([big * 0.32, big * 0.32, big * 0.68, big * 0.68], fill='#ffffff')
+        return ImageTk.PhotoImage(im.resize((n, n), Image.LANCZOS))
+
+    root._ind = {(kind, on, hot): make(kind, on, hot) for kind in ('check', 'radio') for on in (False, True) for hot in (False, True)}
+    for kind, style in (('check', 'Checkbutton'), ('radio', 'Radiobutton')):
+        i = root._ind
+        st.element_create('Flat.%s.indicator' % style, 'image', i[(kind, False, False)],
+                          ('selected', 'active', i[(kind, True, True)]), ('selected', i[(kind, True, False)]), ('active', i[(kind, False, True)]),
+                          sticky='w', padding=(0, 0, 6, 0))
+        st.layout('T' + style, [('%s.padding' % style, {'sticky': 'nswe', 'children': [
+            ('Flat.%s.indicator' % style, {'side': 'left', 'sticky': ''}),
+            ('%s.focus' % style, {'side': 'left', 'sticky': 'w', 'children': [('%s.label' % style, {'sticky': 'nswe'})]})]})])
+
+
 def apply_theme(root):
     st = ttk.Style(root)
     st.theme_use('clam')
+    _indicators(root, st)
     root.configure(background=BG)
     root.option_add('*Font', FONT)
     root.option_add('*TCombobox*Listbox.background', FIELD)
@@ -64,7 +99,8 @@ def apply_theme(root):
     st.configure('Title.TLabel', font=('Segoe UI Semibold', 15), foreground=FG)
     st.configure('Sub.TLabel', foreground=MUTED)
     st.configure('Hint.TLabel', background=PANEL, foreground=FG, padding=10)
-    st.configure('TEntry', fieldbackground=FIELD, foreground=FG, insertcolor=FG, bordercolor=EDGE, padding=5)
+    st.configure('TEntry', fieldbackground=FIELD, foreground=FG, insertcolor=FG, bordercolor=EDGE, padding=3)
+    st.configure('Small.TButton', padding=(9, 3))
     st.map('TEntry', bordercolor=[('focus', ACCENT)])
     st.configure('TCombobox', fieldbackground=FIELD, background=FIELD, foreground=FG, arrowcolor=MUTED, bordercolor=EDGE, padding=4)
     st.map('TCombobox', bordercolor=[('focus', ACCENT)], fieldbackground=[('readonly', FIELD)])
@@ -77,7 +113,7 @@ def apply_theme(root):
     st.configure('TRadiobutton', background=BG, foreground=FG, indicatorcolor=FIELD, indicatorforeground='#ffffff')
     st.map('TRadiobutton', indicatorcolor=[('selected', ACCENT)], indicatorforeground=[('selected', '#ffffff')], background=[('active', BG)])
     st.configure('TNotebook', background=BG, bordercolor=BG, tabmargins=(0, 0, 0, 0))
-    st.configure('TNotebook.Tab', background=BG, foreground=MUTED, padding=(14, 8), bordercolor=BG, font=FONT)
+    st.configure('TNotebook.Tab', background=BG, foreground=MUTED, padding=(8, 6), bordercolor=BG, font=FONT)
     st.map('TNotebook.Tab', background=[('selected', PANEL)], foreground=[('selected', FG)])
     st.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=FG, bordercolor=EDGE, rowheight=28, borderwidth=0)
     st.map('Treeview', background=[('selected', ACCENT)], foreground=[('selected', '#ffffff')])
@@ -152,6 +188,12 @@ class App(tk.Tk):
         self.after(100, self._poll)
 
     # ---------------------------------------------------------------- layout
+    def _toggle_log(self):
+        if self.v_showlog.get():
+            self.log_box.pack(fill='x', side='bottom', padx=16, pady=(0, 4), before=self._bar)
+        else:
+            self.log_box.pack_forget()
+
     def _scrolled(self, nb, title):
         """A tab whose contents scroll when the window is too short to show them all; returns the frame to put them in."""
         outer = ttk.Frame(nb)
@@ -171,16 +213,16 @@ class App(tk.Tk):
         return inner
 
     def _build_ui(self):
-        head = ttk.Frame(self, padding=(16, 12, 16, 0))
+        head = ttk.Frame(self, padding=(16, 8, 16, 0))
         head.pack(fill='x')
         ttk.Label(head, text='Asset Swapper', style='Title.TLabel').pack(side='left')
         ttk.Label(head, text='   replace the game"s models with your own, as a mod', style='Sub.TLabel').pack(side='left', pady=(4, 0))
-        top = ttk.Frame(self, padding=(16, 10, 16, 6))
+        top = ttk.Frame(self, padding=(16, 6, 16, 4))
         top.pack(fill='x')
         def row(r, label, var, browse=None, combo=None, btn='Browse'):
             ttk.Label(top, text=label, style='Muted.TLabel').grid(row=r, column=0, sticky='w', padx=(0, 10))
             w = (ttk.Combobox(top, textvariable=var, width=70) if combo else ttk.Entry(top, textvariable=var, width=73))
-            w.grid(row=r, column=1, sticky='we', padx=4, pady=3)
+            w.grid(row=r, column=1, sticky='we', padx=4, pady=1)
             if browse:
                 ttk.Button(top, text=btn, command=browse).grid(row=r, column=2, padx=(0, 4), sticky='we')
             return w
@@ -209,7 +251,7 @@ class App(tk.Tk):
         main.add(nb, weight=2)
         right = ttk.Frame(main)
         main.add(right, weight=3)
-        self.after(200, lambda: main.sashpos(0, int(self.winfo_width() * 0.40)))
+        self.after(200, lambda: main.sashpos(0, int(self.winfo_width() * 0.36)))
 
         # --- bones
         t = ttk.Frame(nb, padding=4); nb.add(t, text='Bones')
@@ -263,7 +305,7 @@ class App(tk.Tk):
         ttk.Button(t, text='Find images next to the model', command=self.find_textures).pack(anchor='w', pady=2)
 
         # --- fit
-        t = self._scrolled(nb, 'Fit & attachments')
+        t = self._scrolled(nb, 'Fit')
         self.fit = {k: tk.StringVar() for k in ('scale', 'rotate_y', 'ox', 'oy', 'oz')}
         for r, (k, label) in enumerate((('scale', 'Scale (blank = fit the target\'s height)'), ('rotate_y', 'Turn around y (degrees)'),
                                         ('ox', 'Offset x (m)'), ('oy', 'Offset y (m)'), ('oz', 'Offset z (m)'))):
@@ -299,7 +341,7 @@ class App(tk.Tk):
         ttk.Entry(t, textvariable=self.fit['arm_length'], width=10).grid(row=21, column=1, sticky='w')
 
         # --- equipment
-        t = ttk.Frame(nb, padding=6); nb.add(t, text='Backups & revert')
+        t = ttk.Frame(nb, padding=6); nb.add(t, text='Backups')
         ttk.Label(t, text='The game\'s own files are never changed: everything lives in a mod folder. Switching a mod off or '
                           'removing it puts the game back as it was. Every build and every removal first keeps a copy.',
                   wraplength=520).pack(anchor='w')
@@ -359,26 +401,19 @@ class App(tk.Tk):
         ttk.Checkbutton(pf, text='test pose', variable=self.v_pose, command=self.show_preview).pack(side='left')
         ttk.Checkbutton(pf, text='skeletons', variable=self.v_over, command=self.show_preview).pack(side='left', padx=(10, 0))
         ttk.Checkbutton(pf, text='textures', variable=self.v_shade, command=self.show_preview).pack(side='left', padx=(10, 0))
-        ttk.Checkbutton(pf, text='X-ray (edit skeleton)', variable=self.v_xray, command=self._xray_changed).pack(side='left', padx=(10, 0))
-        ttk.Checkbutton(pf, text='Show original model', variable=self.v_ghost, command=self.show_preview).pack(side='left', padx=(10, 0))
-        pf2 = ttk.Frame(right); pf2.pack(fill='x', pady=(4, 0))
-        ttk.Label(pf2, text='View: turn', style='Muted.TLabel').pack(side='left')
-        ttk.Scale(pf2, from_=-180, to=180, variable=self.v_yaw, command=lambda _v: self._debounce()).pack(side='left', fill='x', expand=True, padx=(6, 14))
-        ttk.Label(pf2, text='tilt', style='Muted.TLabel').pack(side='left')
-        ttk.Scale(pf2, from_=-60, to=60, variable=self.v_pitch, command=lambda _v: self._debounce()).pack(side='left', fill='x', expand=True, padx=(6, 0))
+        ttk.Checkbutton(pf, text='X-ray', variable=self.v_xray, command=self._xray_changed).pack(side='left', padx=(10, 0))
+        ttk.Checkbutton(pf, text='Original', variable=self.v_ghost, command=self.show_preview).pack(side='left', padx=(10, 0))
         tf = ttk.Frame(right); tf.pack(fill='x', pady=(6, 0))
-        ttk.Label(tf, text='Transform', style='Muted.TLabel').pack(side='left')
+        ttk.Label(tf, text='Mode', style='Muted.TLabel').pack(side='left')
         for text, val in (('Off', 'off'), ('Move', 'move'), ('Rotate', 'rotate'), ('Scale', 'scale')):
             ttk.Radiobutton(tf, text=text, value=val, variable=self.v_mode, command=self._mode_changed).pack(side='left', padx=(10, 0))
-        tm = ttk.Frame(right); tm.pack(fill='x', pady=(4, 0))
-        ttk.Label(tm, text='Size', style='Muted.TLabel').pack(side='left')
-        ttk.Button(tm, text='-', width=3, command=lambda: self._tf_scale(1 / 1.05)).pack(side='left', padx=(6, 0))
-        ttk.Button(tm, text='+', width=3, command=lambda: self._tf_scale(1.05)).pack(side='left', padx=(2, 0))
         self.v_sizeinfo = tk.StringVar()
-        ttk.Label(tm, textvariable=self.v_sizeinfo, style='Muted.TLabel').pack(side='left', padx=8)
-        ttk.Button(tm, text='Match height', command=self._tf_auto).pack(side='left')
-        ttk.Button(tm, text='Reset fit', command=self._tf_reset).pack(side='left', padx=(6, 0))
-        holder = tk.Frame(right, background='#0f1115')
+        ttk.Button(tf, text='-', width=2, style='Small.TButton', command=lambda: self._tf_scale(1 / 1.05)).pack(side='left', padx=(18, 0))
+        ttk.Button(tf, text='+', width=2, style='Small.TButton', command=lambda: self._tf_scale(1.05)).pack(side='left', padx=(2, 0))
+        ttk.Label(tf, textvariable=self.v_sizeinfo, style='Muted.TLabel').pack(side='left', padx=8)
+        ttk.Button(tf, text='Match height', style='Small.TButton', command=self._tf_auto).pack(side='left')
+        ttk.Button(tf, text='Reset', style='Small.TButton', command=self._tf_reset).pack(side='left', padx=(6, 0))
+        holder = tk.Frame(right, background='#0f1115', height=340, width=400)
         holder.pack(fill='both', expand=True, pady=4)
         holder.pack_propagate(False)                         # the picture follows the space, not the other way round
         holder.bind('<Configure>', self._canvas_resized)
@@ -389,15 +424,17 @@ class App(tk.Tk):
         self.canvas.bind('<ButtonRelease-1>', self._release)
         self.canvas.bind('<Motion>', self._hover)
         self.v_xhint = tk.StringVar()
-        ttk.Label(right, textvariable=self.v_xhint, style='Muted.TLabel', wraplength=640).pack(anchor='w', side='bottom', before=holder)
-        ttk.Label(right, text='cyan: the game\'s bones   orange: the model\'s joints, joined to the game bone each one drives',
-                  style='Muted.TLabel').pack(anchor='w', side='bottom', before=holder)
+        self._hint = ttk.Label(right, textvariable=self.v_xhint, style='Muted.TLabel', wraplength=620, justify='left')
+        self._hint.pack(anchor='w', side='bottom', before=holder)
+        right.bind('<Configure>', lambda e: self._hint.configure(wraplength=max(200, e.width - 8)))
 
         self.log_box = tk.Text(self, height=5, state='disabled', background='#0f1115', foreground='#b8c4d6', font=('Consolas', 9),
                                borderwidth=0, highlightthickness=1, highlightbackground=EDGE, padx=8, pady=6, insertbackground=FG)
-        bar = ttk.Frame(self, padding=(16, 2, 16, 10)); bar.pack(fill='x', side='bottom', before=main)          # (packed before the
-        self.log_box.pack(fill='x', side='bottom', padx=16, pady=(8, 4), before=main)                          # main area, so a small window cuts that, not these)
+        bar = self._bar = ttk.Frame(self, padding=(16, 2, 16, 10)); bar.pack(fill='x', side='bottom', before=main)          # (packed before the
+                                                                                                                # main area, so a small window cuts that, not these)
         self.status = tk.StringVar(value='Ready')
+        self.v_showlog = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text='Log', variable=self.v_showlog, command=self._toggle_log).pack(side='right', padx=(10, 0))
         ttk.Label(bar, textvariable=self.status, style='Muted.TLabel').pack(side='left')
         self.progress = ttk.Progressbar(bar, mode='indeterminate', length=160)
         self.progress.pack(side='right')
@@ -411,11 +448,17 @@ class App(tk.Tk):
     def log(self, *a):
         self.q.put(('log', ' '.join(str(x) for x in a)))
 
+    def busy_msg_locked(self):
+        return False
+
     def _poll(self):
         try:
             while True:
                 kind, data = self.q.get_nowait()
                 if kind == 'log':
+                    line = data.strip().splitlines()[-1] if data.strip() else ''
+                    if line and not self.busy_msg_locked():
+                        self.status.set(line[:140])
                     self.log_box.configure(state='normal'); self.log_box.insert('end', data + '\n')
                     self.log_box.see('end'); self.log_box.configure(state='disabled')
                 elif kind == 'call':
@@ -662,7 +705,7 @@ class App(tk.Tk):
     def _tf_info(self):
         if self.plan is not None:
             sc = self.plan.scale * self._k_now()
-            self.v_sizeinfo.set('scale %.4f (%d%% of the automatic fit)' % (sc, round(100 * sc / self.plan.auto_scale)))
+            self.v_sizeinfo.set('%d%%' % round(100 * sc / self.plan.auto_scale))
 
     def _mode_changed(self):
         self.show_preview()
@@ -778,7 +821,7 @@ class App(tk.Tk):
         if xray:
             hint += ('  ' if hint else '') + 'X-ray: drag an orange dot to where that joint really is.'
         if not hint and not pose:
-            hint = 'Drag the picture to turn the view. Pick Move, Rotate or Scale to fit your model to the original.'
+            hint = 'Drag the picture to turn the view. Move, Rotate and Scale fit your model to the original. Cyan: the game\'s bones; orange: your model\'s joints.'
         self.v_xhint.set(hint)
         self._tf_info()
         self._draw_skeleton()
