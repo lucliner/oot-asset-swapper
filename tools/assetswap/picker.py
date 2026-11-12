@@ -70,9 +70,9 @@ def model_triangles(rom, rel, limit=22000):
 
 
 class ModelPicker(tk.Toplevel):
-    def __init__(self, parent, romfs, targets, friendly, theme, current=None, on_pick=None):
+    def __init__(self, parent, romfs, targets, friendly, theme, current=None, on_pick=None, title='Choose the model to replace'):
         super().__init__(parent)
-        self.title('Choose the model to replace')
+        self.title(title)
         k = max(1.0, float(parent.tk.call('tk', 'scaling')) / 1.333)
         self.geometry('%dx%d' % (int(1180 * k), int(760 * k)))
         self.minsize(int(900 * k), int(600 * k))

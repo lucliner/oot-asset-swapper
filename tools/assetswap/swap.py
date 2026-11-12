@@ -90,7 +90,23 @@ def pick_slots(f, count, max_matrix, need_float_uv=False, rom=None):
         cap = sum(fmt_info(a.fmt)[1] for a in s.attrs if a.name in ('_i0', '_i1'))
         ranked.append((need_float_uv and fmt_info(names['_u0'].fmt)[2] != 'float', -cap, -s.vertex_count, s.index))
     ranked.sort()
-    return [r[3] for r in ranked[:count]]
+    if ranked or rom is None:
+        return [r[3] for r in ranked[:count]]
+    # nothing fits strictly (a creature, an object, a model whose textures are shared): take what the writer can still fill,
+    # best first. The colours may then come from a texture the model shares, but the shape is replaced.
+    loose = []
+    for s in f.shapes:
+        if not s.vertex_count or s.vertex_count <= 3:
+            continue
+        names = {a.name: a for a in s.attrs}
+        if not all(n in names for n in ('_p0', '_i0', '_w0')) and s.skin_count > 1:
+            continue
+        if '_p0' not in names:
+            continue
+        penalty = (2 if AVOID.search(s.name + ' ' + f.materials[s.material]) else 0) +                   (0 if s.skin_count >= 4 else 1 if s.skin_count > 1 else 3) +                   (0 if tex.own_albedo(rom, f, s.material) else 1) + (0 if '_u0' in names else 2)
+        loose.append((penalty, need_float_uv and '_u0' in names and fmt_info(names['_u0'].fmt)[2] != 'float', -s.vertex_count, s.index))
+    loose.sort()
+    return [r[3] for r in loose[:count]]
 
 
 class Plan:
@@ -103,8 +119,14 @@ class Plan:
         self.target_rel = target_rel
         self.src = self.rom.read(target_rel)
         self.f = Bfres(self.src)
+        if not any(sh.vertex_count > 3 for sh in self.f.shapes):
+            raise ValueError('This model has no geometry, so there is nothing to replace.')
         self.W = world_matrices(self.f)
-        self.meshes, self.rig = load_model(input_path, log=log)
+        if str(input_path).startswith('game:'):                  # a model from the game itself
+            import gamesrc
+            self.meshes, self.rig = gamesrc.load(self.rom, input_path)
+        else:
+            self.meshes, self.rig = load_model(input_path, log=log)
         offs = self.profile.get('joint_offsets') or {}          # joints the user dragged in the preview (the model's own units)
         if self.rig is not None and offs:
             self.rig.rest = np.array(self.rig.rest, np.float64)
@@ -112,7 +134,7 @@ class Plan:
                 if n in offs:
                     self.rig.rest[i][:3, 3] += np.asarray(offs[n], np.float64)
         p = self.profile
-        self.top = max(float(self.f.read_attr(s, '_p0')[:, 1].max()) for s in self.f.shapes if s.vertex_count and s.skin_count > 1)
+        self.top = float(self._target_points()[:, 1].max())
         if self.rig is not None:
             self.auto_bone_map = retarget.auto_map(self.rig, self.f.bones)
             self.bone_map = dict(self.auto_bone_map)
@@ -124,6 +146,28 @@ class Plan:
         self._build()
 
     # -- fit
+    def _target_points(self):
+        """Every vertex of the model being replaced, in model space (smooth shapes are stored there; rigid ones in a bone's space)."""
+        f, W = self.f, self.W
+        pts = []
+        for sh in f.shapes:
+            if not sh.vertex_count or sh.vertex_count <= 3:
+                continue
+            p = np.asarray(f.read_attr(sh, '_p0'), np.float64)[:, :3]
+            if sh.skin_count <= 1:
+                h = np.c_[p, np.ones(len(p))]
+                if sh.skin_count == 0 or not sh.skin_bones or f.attr(sh, '_i0') is None:
+                    p = (h @ W[sh.bone].T)[:, :3]
+                else:
+                    vb = f.read_attr(sh, '_i0')[:, 0].astype(int)
+                    q = np.empty_like(p)
+                    for k in np.unique(vb):
+                        sel = vb == k
+                        q[sel] = (h[sel] @ W[f.matrix_to_bone[k]].T)[:, :3]
+                    p = q
+            pts.append(p)
+        return np.concatenate(pts) if pts else np.zeros((1, 3))
+
     def _rotation(self):
         """The model's rotation: a turn about y (rotate_y), then the 3x3 `rotation` the preview's gizmo sets, if any."""
         p = self.profile
@@ -243,7 +287,7 @@ class Plan:
         self.M, self.scale = M, sc
         self.fit_t = M[:3, 3].copy()
         log('fit: scale %.4f, rotate_y %.0f deg' % (sc, p.get('rotate_y') or 0))
-        max_matrix = max(b.smooth for b in autoskin.core_bones(f))
+        max_matrix = max([b.smooth for b in autoskin.core_bones(f)] or [b.smooth for b in f.bones] or [0])
         need_float = any(m.uv is not None and (m.uv.min() < -1e-4 or m.uv.max() > 1 + 1e-4) for m in self.meshes)
         parts = sorted(self.meshes, key=lambda m: -len(m.pos))
         want = dict(p.get('slots') or {})
@@ -281,11 +325,21 @@ class Plan:
             si = want.get(m.name)
             if si is None:
                 # a shape whose albedo file another part already uses is skipped: one file can hold one image
-                pick = next((s for s in free if albedo_of(s) not in used_albedo or albedo_of(s) is None), None)
+                # a part never goes into a slot far smaller than itself: such shapes (an eye shadow of a few hundred vertices) are
+                # driven by the game's face system and the whole model drops out of the picture when one holds a body-sized mesh.
+                # (The first part takes any slot, so a model always gets something.)
+                # (and on a non-player model, not into the small detail shapes at all: eyes, teeth and the like stay as they are)
+                big = max(sh.vertex_count for sh in f.shapes)
+                detail = 0.0 if str(f.model_name).startswith('Player') else 0.15 * big
+                fits = lambda s: f.shapes[s].vertex_count * 8 >= len(m.pos) and f.shapes[s].vertex_count >= detail
+                avail = [s for s in free if albedo_of(s) not in used_albedo or albedo_of(s) is None]
+                pick = next((s for s in avail if fits(s)), None)
+                if pick is None and not self.slots:
+                    pick = next(iter(avail), None)
                 if pick is None:
                     if not self.slots:
-                        raise ValueError('the target has no usable shape slot; pick another target')
-                    log('  %-30s skipped: the target has no more shapes with an albedo of their own' % m.name[:30])
+                        raise ValueError('This model cannot take a replacement yet: none of its parts has a texture of its own and the skinning the tool writes into. Pick another model to replace (Link, and most characters, work).')
+                    log('  %-30s skipped: the target has no more shapes of a fitting size with an albedo of their own' % m.name[:30])
                     self.skipped = getattr(self, 'skipped', []) + [m.name]
                     continue
                 free.remove(pick)
@@ -318,13 +372,13 @@ class Plan:
                     log('  %d triangles wound against their normals were turned round' % bad.sum())
             self.slots[si] = SlotMesh(pos.astype(np.float32), tris, j, w, nrm, uv, texture=tex, uv_float=need_float)
             log('  %-30s -> shape %2d %-36s (%d verts, %d tris)' % (m.name[:30], si, f.shapes[si].name[:36], len(pos), len(m.tris)))
-        self._stretch_arms()
-        self._palms()
-        self._flatten_back()
-        self._armpit_relief()
-        self._stiffen_arms()
-        self._fit_skeleton()
-        self._attachments()
+        # the steps that suit a human body (arms, back, hands, weapon mounts): a model without those bones skips them
+        for step in (self._stretch_arms, self._palms, self._flatten_back, self._armpit_relief, self._stiffen_arms,
+                     self._fit_skeleton, self._attachments):
+            try:
+                step()
+            except Exception as e:
+                log('  %s skipped for this model (%s: %s)' % (step.__name__.strip('_').replace('_', ' '), type(e).__name__, str(e)[:60]))
 
     def _auto_arm_drop(self, parts, M, curl, ceiling=25.0, floor=-25.0, step=3.0, tolerance=0.012):
         """The most the arms can hang down (degrees) without going through the body: the torso's outline (how wide it is at
@@ -1047,6 +1101,22 @@ class Plan:
             out.append({'tris': tris, 'uv': uv if tex is not None else None, 'tex': tex,
                         'colors': None if tex is not None else np.full((len(tris), 3), 170, np.uint8)})
         return out
+
+
+def copy_model(romfs_dir, target_rel, source_rel, mod_dir, log=print):
+    """The other way to swap a model: the target's model file becomes a copy of another game model's file, whole (its shapes,
+    skeleton, materials), so nothing of the target's own layout has to fit. The game's resource size table gets the new size."""
+    import restbl
+    rom = Romfs(romfs_dir)
+    data = rom.read(source_rel)
+    dest = os.path.join(mod_dir, 'romfs', *target_rel.split('/'))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, 'wb') as fh:
+        fh.write(rom.compress(data, dict_name=rom.dict_of(target_rel)))
+    log('copied %s over %s (%d bytes)' % (source_rel, target_rel, len(data)))
+    if len(data) > len(rom.read(target_rel)):
+        restbl.patch(rom, mod_dir, {target_rel: len(data)}, log)
+    return dest
 
 
 def swap(romfs_dir, target_rel, input_path, mod_dir, scale=None, rotate_y=0.0, offset=(0, 0, 0), slots=None, textures=True,

@@ -181,6 +181,8 @@ class App(tk.Tk):
         self._giz = self._gdrag = self._odrag = self._parts_cache = self._ref = None
         self._r_giz = 0.3
         self._giz_active = None
+        self._src_labels = {}
+        self._copy_info = None
         self.v_yaw, self.v_pitch = tk.DoubleVar(value=20), tk.DoubleVar(value=0)
         self._build_ui()
         self.refresh_targets()
@@ -232,8 +234,14 @@ class App(tk.Tk):
         self.cb_target.configure(state='readonly')
         self.cb_target.bind('<<ComboboxSelected>>', self._target_picked)
         self.vars['target'].trace_add('write', lambda *_: self._target_shown())
-        row(2, 'With model', self.vars['model'], self.browse_model)
+        row(2, 'With model', self.vars['model'])
+        src = ttk.Frame(top)
+        src.grid(row=2, column=2, padx=(0, 4), sticky='we')
+        ttk.Button(src, text='Browse', command=self.browse_model).pack(side='left', fill='x', expand=True)
+        ttk.Button(src, text='Game model...', command=self.open_source_picker).pack(side='left', fill='x', expand=True, padx=(4, 0))
         row(3, 'Mod name', self.vars['mod'])
+        self.v_copy = tk.BooleanVar(value=False)
+        ttk.Checkbutton(top, text='Copy whole model', variable=self.v_copy, command=self._copy_toggled).grid(row=3, column=2, padx=(0, 4), sticky='w')
         top.columnconfigure(1, weight=1)
         btns = ttk.Frame(top)
         btns.grid(row=0, column=3, rowspan=4, padx=(12, 0))
@@ -482,16 +490,24 @@ class App(tk.Tk):
         self.title('Asset Swapper (working...)')
 
         def work():
+            err = None
             try:
                 res = fn()
-                self.q.put(('call', (lambda: done(res)) if done else (lambda: None)))
             except Exception as e:
                 import traceback
                 self.log(traceback.format_exc())
-                self.q.put(('call', lambda: messagebox.showerror('Asset Swapper', str(e))))
-            finally:
-                self.q.put(('call', self._idle))
+                err = str(e)
+            self.q.put(('call', self._idle))                    # first, so a dialog (which waits for a click) never leaves it "working"
+            if err is not None:
+                self.q.put(('call', lambda: self._show_error(err)))
+            else:
+                self.q.put(('call', (lambda: done(res)) if done else (lambda: None)))
         threading.Thread(target=work, daemon=True).start()
+
+    def _show_error(self, text):
+        self.status.set('Something went wrong: ' + text[:120])
+        self.lift()
+        messagebox.showerror('Asset Swapper', text, parent=self)
 
     def _idle(self):
         self.busy = False
@@ -507,6 +523,35 @@ class App(tk.Tk):
             return messagebox.showinfo('Asset Swapper', 'Set the game romfs folder first.')
         theme = {'BG': BG, 'PANEL': PANEL, 'FIELD': FIELD, 'EDGE': EDGE, 'FG': FG, 'MUTED': MUTED, 'ACCENT': ACCENT}
         picker.ModelPicker(self, romfs, targets, friendly, theme, self.vars['target'].get(), self._picked)
+
+    def open_source_picker(self):
+        import picker
+        romfs = self.vars['romfs'].get()
+        targets = list_targets(romfs)
+        if not targets:
+            return messagebox.showinfo('Asset Swapper', 'Set the game romfs folder first.')
+        theme = {'BG': BG, 'PANEL': PANEL, 'FIELD': FIELD, 'EDGE': EDGE, 'FG': FG, 'MUTED': MUTED, 'ACCENT': ACCENT}
+        cur = self._src_labels.get(self.vars['model'].get())
+        picker.ModelPicker(self, romfs, targets, friendly, theme, cur, self._source_picked, title='Choose the model to put in')
+
+    def _source_picked(self, rel):
+        label = 'Game model: ' + friendly(rel)
+        self._src_labels[label] = rel
+        self.vars['model'].set(label)
+        self.profile = {}
+        if self.vars['target'].get():
+            self.after(50, self.load)
+
+    def _source_label(self, rel):
+        label = 'Game model: ' + friendly(rel)
+        self._src_labels[label] = rel
+        self.vars['model'].set(label)
+
+    def model_value(self):
+        """The model to put in as the program names it: a file path, or game:<romfs path> for a model of the game."""
+        v = self.vars['model'].get().strip()
+        rel = self._src_labels.get(v)
+        return 'game:' + rel if rel else v
 
     def _picked(self, rel):
         self.vars['target'].set(rel)
@@ -629,7 +674,7 @@ class App(tk.Tk):
         self.collect()
         os.makedirs(self.mod_dir, exist_ok=True)
         path = os.path.join(self.mod_dir, PROFILE_NAME)
-        data = {'model': self.vars['model'].get(), 'target': self.vars['target'].get(), 'profile': self.profile}
+        data = {'model': self.model_value(), 'target': self.vars['target'].get(), 'profile': self.profile}
         json.dump(data, open(path, 'w', encoding='utf-8'), indent=1)
         self.log('profile saved: ' + path)
 
@@ -638,18 +683,74 @@ class App(tk.Tk):
         if not p:
             return
         d = json.load(open(p, encoding='utf-8'))
-        self.vars['model'].set(d.get('model', '')); self.vars['target'].set(d.get('target', ''))
+        m = d.get('model', '')
+        if m.startswith('game:'):
+            self._source_label(m[5:])
+        else:
+            self.vars['model'].set(m)
+        self.vars['target'].set(d.get('target', ''))
         self.profile = d.get('profile', {})
         self.distribute()
         self.load()
 
     # ---------------------------------------------------------------- loading and preview
+    def copy_mode(self):
+        """True when the whole model file of a game model is to be copied over the target's (the other way to swap)."""
+        return bool(self.v_copy.get()) and self.model_value().startswith('game:')
+
+    def _copy_toggled(self):
+        if self.model_value().startswith('game:') and self.vars['target'].get():
+            self.load()
+        elif self.v_copy.get():
+            messagebox.showinfo('Asset Swapper', 'Copying a whole model needs a model of the game as the model to put in: use Game model...')
+            self.v_copy.set(False)
+
+    def _load_copy(self, romfs, target, model):
+        import gametex
+        from containers import Romfs
+
+        def work():
+            rom = Romfs(romfs)
+            self.log('loading %s ...' % os.path.basename(model))
+            src, facts = gametex.textured_parts(rom, model[5:], 512)
+            orig, _f = gametex.textured_parts(rom, target, 128)
+            return src, np.concatenate([q['tris'] for q in orig]) if orig else np.zeros((0, 3, 3)), facts
+
+        def done(res):
+            self.plan = None
+            self._copy_info = res
+            self._base = self._cam = None
+            self.fill_bones(); self.fill_parts(); self.fill_textures()
+            self.show_preview()
+        self.run_bg(work, done)
+
+    def _render_copy(self):
+        parts, orig, _facts = self._copy_info
+        tris = np.concatenate([q['tris'] for q in parts]) if parts else np.zeros((0, 3, 3))
+        ghost = orig if self.v_ghost.get() else None
+        ref = np.concatenate([tris, orig])
+        try:
+            self._base, self._cam = preview.render_base(tris, self.v_yaw.get(), self.v_pitch.get(), self._view_size, ref, None,
+                                                         ghost=ghost, parts=parts)
+        except Exception as e:
+            self.log('preview failed: %s' % e)
+            return
+        self._pose_view = False
+        self._handles, self._giz = {}, None
+        self.v_xhint.set('Copy mode: the whole model file is copied over the one it replaces, at its own size (tick Original to see the '
+                         'model it replaces). Nothing is refitted.')
+        self.photo = ImageTk.PhotoImage(self._base)
+        self.canvas.configure(image=self.photo)
+
     def load(self):
         if not self.vars['model'].get() or not self.vars['target'].get():
             messagebox.showinfo('Asset Swapper', 'Choose the model to replace and the model to put there first.')
             return
         self.collect()
-        romfs, target, model = self.vars['romfs'].get(), self.vars['target'].get(), self.vars['model'].get()
+        romfs, target, model = self.vars['romfs'].get(), self.vars['target'].get(), self.model_value()
+        if self.copy_mode():
+            return self._load_copy(romfs, target, model)
+        self._copy_info = None
 
         def work():
             self.log('loading %s ...' % os.path.basename(model))
@@ -783,6 +884,8 @@ class App(tk.Tk):
 
     def show_preview(self):
         if self.plan is None:
+            if self._copy_info is not None:
+                self._render_copy()
             return
         plan, pose = self.plan, self.v_pose.get()
         yaw, pitch = self.v_yaw.get(), self.v_pitch.get()
@@ -1158,6 +1261,8 @@ class App(tk.Tk):
     def find_textures(self):
         if self.plan is None:
             return
+        if self.model_value().startswith('game:'):
+            return self.log('this model is from the game: it has no image files to look for')
         base = os.path.dirname(os.path.dirname(self.vars['model'].get()))
         imgs = []
         for root, _d, files in os.walk(base):
@@ -1275,13 +1380,27 @@ class App(tk.Tk):
 
     # ---------------------------------------------------------------- build
     def build(self):
+        if self.copy_mode():
+            if self._copy_info is None:
+                return self.load()
+            self.save_profile()
+            mod, romfs, target, model = self.mod_dir, self.vars['romfs'].get(), self.vars['target'].get(), self.model_value()
+
+            def work_copy():
+                import backup
+                snap = backup.snapshot(os.path.dirname(mod), os.path.basename(mod), 'before a build')
+                if snap:
+                    self.log('backed up the existing mod first: %s' % snap)
+                return swap.copy_model(romfs, target, model[5:], mod, self.log)
+            self.run_bg(work_copy, lambda _r: (self.log('Built: %s  (restart the game to use it)' % mod), self.fill_backups()))
+            return
         if self.plan is None:
             return self.load()
         self.collect()
         self.save_profile()
         mod = self.mod_dir
         tex = self.v_tex.get()
-        romfs, target, model = self.vars['romfs'].get(), self.vars['target'].get(), self.vars['model'].get()
+        romfs, target, model = self.vars['romfs'].get(), self.vars['target'].get(), self.model_value()
 
         def work():
             plan = swap.Plan(romfs, target, model, self.profile, self.log)       # fresh, from the current profile

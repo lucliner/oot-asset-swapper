@@ -45,20 +45,56 @@ class Restbl:
 def patch(rom, mod_dir, changed, log=print):
     """Write the mod's copy of the size table with the entries of `changed` {romfs path ('Tex/X.bntx.zs'): new
     decompressed size} set. Textures get size + 0x118; any other file keeps the original table's extra over its old
-    decompressed size."""
+    decompressed size.
+
+    The game uses one mod's table only (the mod whose folder name sorts last), so the tables of the other enabled mods in the
+    same mods folder are merged in first: their grown entries stay in force beside this mod's."""
     import os
     path = os.path.join(mod_dir, 'romfs', *TABLE_REL.split('/'))
-    table = Restbl(open(path, 'rb').read() and rom.decompress(open(path, 'rb').read()) if os.path.exists(path) else rom.read(TABLE_REL))
+    base = Restbl(rom.read(TABLE_REL))
+    table = Restbl(rom.read(TABLE_REL))
+    mods_dir = os.path.dirname(os.path.abspath(mod_dir))
+    me = os.path.basename(os.path.abspath(mod_dir))
+    later = []
+    try:
+        others = sorted(d for d in os.listdir(mods_dir) if d != me and not d.startswith(('-', '_')) and os.path.isdir(os.path.join(mods_dir, d)))
+    except OSError:
+        others = []
+    for d in others:
+        t = os.path.join(mods_dir, d, 'romfs', *TABLE_REL.split('/'))
+        if not os.path.exists(t):
+            continue
+        try:
+            theirs = Restbl(rom.decompress(open(t, 'rb').read()))
+        except Exception:
+            continue
+        grown = {h: v for h, v in theirs.entries.items() if base.entries.get(h) != v}
+        table.entries.update(grown)
+        if grown:
+            log('  size table: %d entries of the mod "%s" kept' % (len(grown), d))
+        if d > me:
+            later.append(d)
+    if os.path.exists(path):                                      # this mod's earlier builds (other targets) stay too
+        try:
+            mine = Restbl(rom.decompress(open(path, 'rb').read()))
+            table.entries.update({h: v for h, v in mine.entries.items() if base.entries.get(h) != v})
+        except Exception:
+            pass
     for rel, size in changed.items():
-        old_entry = table.get(rel)
-        if old_entry is None:
-            extra = TEXTURE_EXTRA
-        elif rel.startswith('Tex/'):
+        old_entry = base.get(rel)
+        if old_entry is None or rel.startswith('Tex/'):
             extra = TEXTURE_EXTRA
         else:
             extra = old_entry - len(rom.read(rel))          # the parsed-size surplus of the original file
-        table.set(rel, size + extra)
+            frac = float(os.environ.get('ASSETSWAP_RESTBL_MARGIN', '1.0'))     # (for experiments: another margin)
+            # and room to spare. The game reserves about 2.5 x the metadata plus the buffers and a little more; with two swapped
+            # models loaded together (a Zora and the King, say) a 12% margin left one of them undrawn, a margin of the model's
+            # own size did not. The surplus costs only reserved memory, so it is capped.
+            extra += min(0x400000, max(0x10000, int(size * frac)))
+        table.set(rel, size + extra)                        # the buffers, and short by a byte means the model is not shown
         log('  size table: %s %s -> %d' % (rel, old_entry, size + extra))
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    dict_name = rom.dict_of(TABLE_REL)
-    open(path, 'wb').write(rom.compress(table.to_bytes(), dict_name=dict_name))
+    open(path, 'wb').write(rom.compress(table.to_bytes(), dict_name=rom.dict_of(TABLE_REL)))
+    if later:
+        log('  NOTE: the game takes the size table of the mod whose folder sorts last, and "%s" sorts after this one: '
+            'its table lacks the entries of this mod. Rename this mod to sort last (e.g. "zz-%s"), or rebuild that mod so its table picks these up.' % (later[-1], me))

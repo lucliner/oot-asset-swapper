@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.0] - 2026-11-12
+
+### Added
+- **Game model as the source**: *Game model...* (with a model picker) uses another model of the game as the replacement, with its own textures and skin weights.
+- Nearly every Player, NPC and enemy model can take a replacement (248 of 249 build; the rest has no geometry).
+- NPC texture handling: numbered colour variants (`_Alb.00`, `.01`, `.02`) are all replaced, and maps of unknown layout (`RAH`, `Emc`, `Gn3`, `Fzm`, `Fzn`) are set to the median of the original so they keep their overall effect without printing the old layout on the new model.
+
+### Fixed
+- **Swapped models that were not drawn at all**: the model file's header holds the size of its buffer pool, which is now updated; any model larger than the original was previously dropped silently.
+- **Swapped NPCs that exploded into huge shards**: skin bone lists that would have pushed the buffer pool to a new offset are now taken from lists already in the file.
+- **A model vanishing when a large part went into a small face shape** (eye shadow, teeth): parts are no longer placed into much smaller slots, and not into the small detail shapes of NPCs.
+- Two swapped models loaded together (a Zora and the King) no longer leave one undrawn: the size-table margin is now the model's own size, capped at 4 MiB.
+- Culling bounds of swapped shapes are written generously so a model is not culled away.
+- A crash when the error dialog opened while the window was busy.
+
+### Known issues
+- Rigid props (hookshot, weapons) are not supported.
+
 ## [1.2.0] - 2026-11-12
 
 ### Added

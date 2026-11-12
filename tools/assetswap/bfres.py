@@ -49,6 +49,7 @@ class Bone:
     scale: tuple
     rot: tuple             # euler XYZ (radians) or quaternion, see flags
     pos: tuple
+    matrix: int = -1       # the matrix index that skins to this bone: its smooth one, else its rigid one (-1: none)
 
 
 @dataclass
@@ -156,7 +157,10 @@ class Bfres:
             idx, par, sm, rg, _bb, _ud = struct.unpack_from('<HhhhHH', b, p + 0x20)
             fl = self._u32(p + 0x2c)
             f = struct.unpack_from('<10f', b, p + 0x30)
-            bones.append(Bone(idx, self._str(self._u64(p)), par, sm, rg, fl, f[0:3], f[3:7], f[7:10]))
+            m = sm
+            if m < 0 and rg >= 0 and nsmooth + rg < len(self.matrix_to_bone) and self.matrix_to_bone[nsmooth + rg] == idx:
+                m = nsmooth + rg
+            bones.append(Bone(idx, self._str(self._u64(p)), par, sm, rg, fl, f[0:3], f[3:7], f[7:10], m))
         return bones
 
     def _shape(self, o, vb_arr, i):

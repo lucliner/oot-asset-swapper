@@ -13,6 +13,7 @@ shapes are emptied (one degenerate triangle) unless `keep_others`. Layout facts,
     in some bone's space, set here to a box that cannot be culled.
   * a vertex's bone indices (`_i0`, `_i1`) are skeleton matrix indices; a shape's skin list holds the bones it uses.
 """
+import os
 import struct
 from dataclasses import dataclass, replace
 
@@ -128,6 +129,52 @@ def _pack_joints(sl, shape, matrix_to_bone):
     return j, w, K
 
 
+def _fit_index_width(f, shape, j):
+    """Joint ids too big for the shape's bone-index attribute (8 bits holds 0..255) are moved to the nearest ancestor bone whose
+    matrix index fits."""
+    a = next((x for x in shape.attrs if x.name == '_i0'), None)
+    if a is None or j.size == 0:
+        return j
+    hi = (1 << (8 * int(fmt_info(a.fmt)[0][1]))) - 1
+    if j.max() <= hi:
+        return j
+    j = j.copy()
+    for m in np.unique(j[j > hi]):
+        b = f.matrix_to_bone[int(m)] if int(m) < len(f.matrix_to_bone) else 0
+        sub = 0
+        while b >= 0:
+            if 0 <= f.bones[b].matrix <= hi:
+                sub = f.bones[b].matrix
+                break
+            b = f.bones[b].parent
+        j[j == m] = sub
+    return j
+
+
+def _to_bone_space(f, shape, j, pos, nrm, tan):
+    """pos, normals and tangents (model space) in the space of the bone each vertex follows: the shape's own bone, or the one
+    its rigid matrix index names."""
+    from skeleton import world_matrices
+    W = getattr(f, '_world_cache', None)
+    if W is None:
+        W = f._world_cache = world_matrices(f)
+    n = len(pos)
+    if j.shape[1] >= 1 and f.attr(shape, '_i0') is not None:
+        bone = np.array([f.matrix_to_bone[int(m)] if int(m) < len(f.matrix_to_bone) else shape.bone for m in j[:, 0]])
+    else:
+        bone = np.full(n, shape.bone)
+    p2, n2, t2 = pos.copy(), np.asarray(nrm, np.float64).copy(), np.asarray(tan, np.float64).copy()
+    for b in np.unique(bone):
+        sel = bone == b
+        inv = np.linalg.inv(W[b])
+        p2[sel] = (np.c_[pos[sel], np.ones(sel.sum())] @ inv.T)[:, :3]
+        n2[sel] = n2[sel] @ inv[:3, :3].T
+        t2[sel] = t2[sel] @ inv[:3, :3].T
+    n2 /= np.maximum(np.linalg.norm(n2, axis=1, keepdims=True), 1e-12)
+    t2 /= np.maximum(np.linalg.norm(t2, axis=1, keepdims=True), 1e-12)
+    return p2.astype(np.float32), n2, t2
+
+
 def build_vertices(f, shape, sl):
     """The slot's vertex buffer bytes in the shape's own attribute layout."""
     n = len(sl.pos)
@@ -135,11 +182,15 @@ def build_vertices(f, shape, sl):
     uv = None if sl.uv is None else np.asarray(sl.uv, np.float64)
     tan, tw = _tangents(np.asarray(sl.pos, np.float64), uv, sl.tris, nrm)
     j, w, K = _pack_joints(sl, shape, f.matrix_to_bone)
+    j = _fit_index_width(f, shape, j)
+    pos = np.asarray(sl.pos, np.float32)
+    if shape.skin_count <= 1:                       # a rigid shape: its vertices live in the space of one bone
+        pos, nrm, tan = _to_bone_space(f, shape, j, np.asarray(sl.pos, np.float64), nrm, tan)
     buf = np.zeros((n, shape.stride), np.uint8)
     for a in shape.attrs:
         c = _comp_count(a.fmt)
         if a.name == '_p0':
-            v = np.asarray(sl.pos, np.float32)
+            v = pos
         elif a.name == '_n0':
             v = np.c_[nrm, np.ones(n)]
         elif a.name == '_t0':
@@ -147,7 +198,16 @@ def build_vertices(f, shape, sl):
         elif a.name.startswith('_u'):
             v = np.zeros((n, 2)) if (uv is None or a.name != '_u0') else uv
         elif a.name.startswith('_c'):
-            v = np.ones((n, 4)) if sl.color is None else np.asarray(sl.color)
+            if sl.color is not None:
+                v = np.asarray(sl.color)
+            else:
+                v = np.ones((n, 4))
+                try:                                  # a colour attribute the donor holds as one constant (a fur or glow shader reads it
+                    d = np.asarray(f.read_attr(shape, a.name), np.float64)      # as a mask): keep that value, not white
+                    if len(d) and np.ptp(d, axis=0).max() < 1e-6 and d.shape[1] == v.shape[1]:
+                        v = np.tile(d[0], (n, 1))
+                except Exception:
+                    pass
         elif a.name in ('_i0', '_i1'):
             lo = 0 if a.name == '_i0' else _comp_count(next(x.fmt for x in shape.attrs if x.name == '_i0'))
             v = j[:, lo:lo + c]
@@ -224,6 +284,8 @@ def patch_model(src, slots, keep_others=False, bone_positions=None, inv_bind=Non
         vpos = _align(len(vtx_blob), ALIGN_BUF); vtx_blob += b'\0' * (vpos - len(vtx_blob)) + vb
         placed[s.index] = (ipos, len(ib), count, vpos, n, j, w)
 
+    own_lists = {sh.index: (u64(sh.off + 0x20), set(sh.skin_bones)) for sh in f.shapes if sh.skin_bones}
+
     # pass 2: metadata (skin lists and bounding spheres are appended where a slot has real geometry)
     sec1_size = _align(len(idx_blob), 0x200)
     for s in f.shapes:
@@ -242,27 +304,43 @@ def patch_model(src, slots, keep_others=False, bone_positions=None, inv_bind=Non
             put32(sub, 0); put32(sub + 4, count)
             put32(u64(q + 0x18), ilen)
             put32(q + 0x20, ipos); put32(q + 0x2c, count); put32(q + 0x30, 0)
-        if j is not None:
+        lods = max(1, b[s.off + 0x5b])
+        for lod in range(lods):
+            put16(mesh + lod * 0x38 + 0x34, 1)                 # one submesh per LOD: the one set above (others would draw stale ranges)
+        _dbg = os.environ.get('ASSETSWAP_DBG', '')
+        if j is not None and 'noskinlist' not in _dbg:
             used = sorted({int(x) for x in np.unique(j[w > 0])})
-            bones = sorted({f.matrix_to_bone[m_] for m_ in used})
-            pos = np.asarray(slots[s.index].pos, np.float64)
-            sph = np.zeros((len(bones), 4), np.float32)
-            for k, bn in enumerate(bones):
-                m_ = f.bones[bn].smooth
-                sel = ((j == m_) & (w > 0)).any(1)
-                if m_ < 0 or not sel.any():
-                    continue
-                inv = np.eye(4); inv[:3, :] = inv_model[m_]
-                loc = (np.c_[pos[sel], np.ones(sel.sum())] @ inv.T)[:, :3]
-                c = (loc.min(0) + loc.max(0)) / 2
-                sph[k, :3] = c
-                sph[k, 3] = np.linalg.norm(loc - c, axis=1).max() * 1.05 + 0.005
-            put64(s.off + 0x20, append(np.array(bones, '<u2').tobytes()))
-            put64(s.off + 0x40, append(sph.astype('<f4').tobytes()))
-            put16(s.off + 0x58, len(bones))
+            bones = sorted({f.matrix_to_bone[m_] for m_ in used if m_ < len(f.matrix_to_bone)})
+            # The skin list is what the game uploads matrices for, so a longer list that holds these bones is as good as the
+            # exact one. Growing the metadata past its 4 KiB boundary moves the buffer pool, which the game does not take well,
+            # so a list already in the file (this shape's own, else another shape's) that covers the bones is reused; a new
+            # one is appended only when none does.
+            need = set(bones)
+            pick = None
+            for si_, (ptr_, lst_) in sorted(own_lists.items(), key=lambda kv: (kv[0] != s.index, len(kv[1][1]))):
+                if lst_ and need <= lst_:
+                    pick = (ptr_, len(lst_)); break
+            if pick is None:
+                pick = (append(np.array(bones, '<u2').tobytes()), len(bones))
+            put64(s.off + 0x20, pick[0])
+            put16(s.off + 0x58, pick[1])
+        # bounds. The game culls a shape by its per-LOD bounding sphere (a zero sphere is how a model drops a shape at
+        # distance) and the boxes/spheres are kept in a bone's frame, so honest values would need that frame: generous ones
+        # are written instead, big enough to hold the geometry whatever bone they are measured from, for every LOD and box.
+        pos = np.asarray(slots[s.index].pos, np.float64) if s.index in slots else np.zeros((1, 3))
+        reach = float(np.linalg.norm(pos, axis=1).max()) if len(pos) else 1.0
+        big = 2.0 * reach + 1.0
+        rad = u64(s.off + 0x40)
+        if 'nobounds' in _dbg:
+            continue
+        if rad:
+            for lod in range(lods):
+                struct.pack_into('<4f', b, rad + lod * 16, 0.0, 0.0, 0.0, big)
         bb = u64(s.off + 0x38)
-        for e in range(6):
-            struct.pack_into('<6f', b, bb + e * 24, 0, 0, 0, 1000, 1000, 1000)    # (centre, extent): never culled
+        if bb:
+            nbox = (rad - bb) // 24 if rad > bb else 2 * lods
+            for e in range(nbox):
+                struct.pack_into('<6f', b, bb + e * 24, 0, 0, 0, big, big, big)
 
     for loc, fmt in fmt_patch:
         put16(loc, fmt)
@@ -273,6 +351,8 @@ def patch_model(src, slots, keep_others=False, bone_positions=None, inv_bind=Non
     sec0_size = len(b) + len(appended)
     b += appended
     pool = max(old[1][1], _align(sec0_size, ALIGN_SEC))
+    if 'shiftpool' in os.environ.get('ASSETSWAP_DBG', ''):
+        pool = old[1][1] + ALIGN_SEC
     sec2_size = _align(len(vtx_blob), 0x200)
     new = [list(s) for s in old]
     new[0][2] = sec0_size
@@ -283,6 +363,16 @@ def patch_model(src, slots, keep_others=False, bone_positions=None, inv_bind=Non
     new[3][1] = end2
     new[4][1] = end2
     new[5][1] = end2 + old[4][2]
+
+    # The header keeps a descriptor of the buffer pool: the combined size of the index and vertex sections, then the offset the
+    # pool starts at. The game reserves its buffer by it, so a model that grew past the original size is not drawn at all
+    # unless it says so here. (Found by value: old total followed by old pool offset; it sits at 0x16c in the 5.x models.)
+    old_total = old[1][2] + old[2][2]
+    new_total = new[1][2] + new[2][2]
+    needle = struct.pack('<II', old_total, old[1][1])
+    at = bytes(b[:old[0][2]]).find(needle)
+    if at >= 0:
+        struct.pack_into('<II', b, at, new_total, new[1][1])
 
     # pointers listed under sections 1..4 move with their sections
     rlt = bytearray(src[f.rlt_off:])

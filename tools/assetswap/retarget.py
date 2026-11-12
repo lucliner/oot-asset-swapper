@@ -82,6 +82,9 @@ def auto_map(rig, game_bones):
     # Mixamo-style rigs say UpLeg / Leg / Foot: there "Leg" is the shin, not the thigh
     thigh_named_up = any(_norm(_clean(n)).endswith('upleg') or _norm(_clean(n)).endswith('upperleg') for n in rig.names)
     for name in rig.names:
+        if name in game and game[name].matrix >= 0:               # the same bone name: a model from the game itself
+            out[name] = name
+            continue
         if SKIP.search(_clean(name)) and _role(name) != 'Wrist':
             continue
         role = _role(name)
@@ -96,7 +99,7 @@ def auto_map(rig, game_bones):
             target = '%s_%s' % (role, side)
         else:
             target = role
-        if target not in game or game[target].smooth < 0:
+        if target not in game or game[target].matrix < 0:
             continue
         # two joints for one role: the one nearer the root of the source skeleton keeps it
         out.setdefault(name, target)
@@ -115,7 +118,7 @@ def resolve(rig, game_bones, bone_map, W=None):
             j = rig.parents[j]
             res[i] = own[j]
     if W is not None:
-        core = [b.index for b in game_bones if b.smooth >= 0 and b.name in set(bone_map.values())]
+        core = [b.index for b in game_bones if b.matrix >= 0 and b.name in set(bone_map.values())] or [b.index for b in game_bones if b.matrix >= 0]
         for i, r in enumerate(res):
             if r is None and core:
                 p = rig.position(i)
@@ -346,9 +349,9 @@ def deform(mesh, rig, res, T, src_to_world, f):
         items = sorted(acc[r].items(), key=lambda kv: -kv[1])[:K]
         tot = sum(w for _g, w in items) or 1.0
         for c, (g, w) in enumerate(items):
-            joints[r, c] = f.bones[g].smooth
+            joints[r, c] = f.bones[g].matrix
             weights[r, c] = w / tot
         if not items:
-            joints[r, 0] = f.bones[next(b.index for b in f.bones if b.smooth >= 0)].smooth
+            joints[r, 0] = next((b.matrix for b in f.bones if b.matrix >= 0), 0)
             weights[r, 0] = 1.0
     return out, nout, joints, weights

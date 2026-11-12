@@ -121,7 +121,7 @@ def test_obj_and_autoskin():
 
     # a made-up skeleton: a thigh and a shin stacked on y; points near each take that bone
     class B:
-        def __init__(s, i, n, p, sm): s.index, s.name, s.parent, s.smooth = i, n, p, sm
+        def __init__(s, i, n, p, sm): s.index, s.name, s.parent, s.smooth, s.matrix = i, n, p, sm, sm
     class F:
         bones = [B(0, 'Waist', -1, 7), B(1, 'Leg_1_L', 0, 8), B(2, 'Leg_2_L', 1, 9), B(3, 'Ankle_L', 2, 10)]
     W = [np.eye(4) for _ in range(4)]
@@ -186,7 +186,7 @@ def test_gltf_and_retarget():
 
     # name matching: MMD, Mixamo and Blender-style names land on the game's bone names
     class B:
-        def __init__(s, n, sm=1): s.name, s.smooth = n, sm
+        def __init__(s, n, sm=1): s.name, s.smooth, s.matrix = n, sm, sm
     game = [B(n) for n in ('Waist', 'Spine_1', 'Spine_2', 'Neck', 'Head', 'Clavicle_L', 'Arm_1_L', 'Arm_2_L', 'Wrist_L',
                            'Leg_1_R', 'Leg_2_R', 'Ankle_R', 'Toe_R')]
     class Rg:

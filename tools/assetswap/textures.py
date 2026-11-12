@@ -51,9 +51,39 @@ def albedo_name(f, mat_index):
     return next((n for n in material_textures(f, mat_index) if kind_of(n) == 'Alb'), None)
 
 
+KINDS = ('Alb', 'Nrm', 'Rgh', 'AO', 'Mtl', 'Emm', 'Thc', 'Gn2', 'Gn3', 'RAH', 'Emc', 'Fzm', 'Fzn')
+
+
 def kind_of(name):
-    suffix = name.rsplit('_', 1)[-1]
-    return suffix if suffix in ('Alb', 'Nrm', 'Rgh', 'AO', 'Mtl', 'Emm', 'Thc', 'Gn2') else None
+    """The map kind a texture name ends in. A colour variant carries a number after it (`..._Alb.00`, `.01`: the game picks one
+    per character), which does not change the kind."""
+    suffix = name.rsplit('_', 1)[-1].split('.')[0]
+    return suffix if suffix in KINDS else None
+
+
+def variants(rom, name):
+    """Names of the texture and of every numbered colour variant of it that is in the romfs (`X_Alb.00` -> X_Alb.00, .01, .02)."""
+    base, dot, num = name.rpartition('.')
+    if not dot or not num.isdigit():
+        return [name]
+    folder = os.path.dirname(rom.path('Tex/%s.bntx.zs' % name))
+    try:
+        found = sorted(fn[:-len('.bntx.zs')] for fn in os.listdir(folder)
+                       if fn.startswith(base + '.') and fn.endswith('.bntx.zs') and fn[len(base) + 1:-len('.bntx.zs')].isdigit())
+    except OSError:
+        found = []
+    return found or [name]
+
+
+def median_pixel(donor):
+    """One RGBA pixel holding the median of the donor texture's own pixels: a map whose layout this tool does not know is set to
+    its average, so it keeps its overall effect (a little shine, a little gloss) without printing its old layout on a new model."""
+    import gametex
+    d = bntx.Brti(donor)
+    im = gametex.decode(donor, 64, rgba=True)
+    if im is None:
+        return None
+    return np.median(im.reshape(-1, 4), axis=0).astype(np.uint8).reshape(1, 1, 4)
 
 
 # Link's skin carries two more maps laid out on his own UVs (thickness and a gradient map): left alone they print his
@@ -126,17 +156,24 @@ def build(rom, f, slot_textures, log=print, geometry=None):
     """{romfs path: compressed file bytes} for every texture of the materials of the given shapes.
     slot_textures: {shape index: image path or None}."""
     out = {}
+    todo = []
     for si, img_path in slot_textures.items():
         mat = f.shapes[si].material
-        for name in material_textures(f, mat):
-            kind = kind_of(name)
-            rel = 'Tex/%s.bntx.zs' % name
-            if kind is None or not os.path.exists(rom.path(rel)):
-                log('  texture %-40s left as it is (%s)' % (name, 'unknown kind' if kind is None else 'not in the romfs'))
+        for name0 in material_textures(f, mat):
+            kind = kind_of(name0)
+            if kind is None or not os.path.exists(rom.path('Tex/%s.bntx.zs' % name0)):
+                log('  texture %-40s left as it is (%s)' % (name0, 'unknown kind' if kind is None else 'not in the romfs'))
                 continue
-            if f.model_name not in name:
+            if f.model_name not in name0:
                 # a texture shared with other models (cloth tiles, detail maps) is not this model's to change
-                log('  texture %-40s left as it is (shared with other models)' % name)
+                log('  texture %-40s left as it is (shared with other models)' % name0)
+                continue
+            for name in variants(rom, name0):
+                todo.append((si, img_path, name, kind))
+    for si, img_path, name, kind in todo:
+        if True:
+            rel = 'Tex/%s.bntx.zs' % name
+            if rel in out:
                 continue
             donor = rom.read(rel)
             d = bntx.read(donor)
@@ -149,8 +186,13 @@ def build(rom, f, slot_textures, log=print, geometry=None):
                     pix[..., :3] = pad_unused(pix[..., :3], *geometry[si])    # no island-edge blocks full of background
             elif kind in FLAT_MAPS:
                 pix = np.broadcast_to(np.array(FLAT_MAPS[kind], np.uint8), (1, 1, 4)).copy()
-            else:
+            elif kind in NEUTRAL:
                 pix = neutral_pixels(kind, d.channels, 1)
+            else:
+                pix = median_pixel(donor)
+                if pix is None:
+                    log('  texture %-40s left as it is (cannot be read)' % name)
+                    continue
             new = bntx_flat.make_inplace(donor, pix, detail=(kind == 'Alb'))
             if new is None:
                 log('  texture %-40s: format 0x%04x cannot be written in place; left as it is' % (name, d.fmt))

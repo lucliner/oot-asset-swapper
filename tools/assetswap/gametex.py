@@ -21,8 +21,9 @@ BCN = {0x1a: ('bc1', 8), 0x1b: ('bc2', 16), 0x1c: ('bc3', 16), 0x1d: ('bc4', 8),
 _cache = {}
 
 
-def decode(data, max_side=256):
-    """RGB uint8 (h, w, 3) of the base level of a one-texture BNTX file's bytes; None for a format this cannot read."""
+def decode(data, max_side=256, rgba=False):
+    """RGB uint8 (h, w, 3) (RGBA with `rgba`) of the base level of a one-texture BNTX file's bytes; None for a format this cannot
+    read."""
     if _t2d is None:
         return None
     d = bntx.Brti(data)
@@ -45,7 +46,7 @@ def decode(data, max_side=256):
         w, h = gw * 4, gh * 4
     else:
         return None
-    a = np.frombuffer(px, np.uint8).reshape(h, w, 4)[..., [2, 1, 0]]
+    a = np.frombuffer(px, np.uint8).reshape(h, w, 4)[..., [2, 1, 0, 3] if rgba else [2, 1, 0]]
     im = Image.fromarray(np.ascontiguousarray(a[:d.h, :d.w]))
     if max(im.size) > max_side:
         k = max_side / max(im.size)

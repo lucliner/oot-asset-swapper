@@ -28,6 +28,7 @@ A desktop tool that replaces the Player and NPC models in static recompilations 
 - **OpenGL preview** with the model's textures; **X-ray mode** to see and drag the skeleton's joints.
 - **Fit to the original**: the game's own model is shown locked in place, see-through, and a gizmo moves, rotates (each axis separately) and scales yours against it.
 - **Simple bone editor**: a list of body parts (head, left upper arm, ...) with what each matched; the full joint list is behind an advanced switch.
+- **Any model as a source**: besides your own files, *Game model...* picks another model of the game (a ReDead on a Zora, a cow on the King), keeping its textures and skin weights. Nearly every Player, NPC and enemy model can be replaced.
 
 - **Import** `.glb`/`.gltf`/`.obj` directly; `.fbx`/`.dae` through Blender (set `BLENDER` to `blender.exe`).
 - **Auto-retarget** a rigged model onto the game's skeleton, keeping its skin weights, so the game's animations drive it. Unrigged models get automatic weights.
@@ -38,7 +39,7 @@ A desktop tool that replaces the Player and NPC models in static recompilations 
 
 ## Quick start (Windows)
 
-1. Download `AssetSwapper-v1.2.0-win64.zip` from [Releases](../../releases), unzip anywhere.
+1. Download `AssetSwapper-v1.3.0-win64.zip` from [Releases](../../releases), unzip anywhere.
 2. Run `Asset Swapper.exe`; point it at your game's `romfs` folder if asked (the mod is written to the `mods` folder beside it).
 3. Pick the model to **Replace** (`Player_Child`, `Player_Adult`, an NPC) and **With model**, then *Load*.
 4. Fix the bone map / parts / textures if needed, then **Build mod**.
@@ -70,7 +71,8 @@ Output goes to `dist\Asset Swapper\`.
 ## Known limits
 
 - Models bigger than the game's own need a larger resource size table: the tool writes it into the mod. Only one mod's table is used, so keep one table with all the entries.
-- Replacing Navi (`Npc_Navi`) is not working yet: the mod loads but the new model is not drawn.
+- NPC models: parts of an imported model that would need one of the target's small face-detail shapes (eyes, teeth) are left out, so a model's extra bits (masks, props) can go missing. Faces keep the target's expressions only through the body shapes.
+- Navi's own body is tiny and sits inside a glow the game draws separately; a replacement needs a large scale to be seen.
 - Child face texture is 12x12 ASTC, so fine detail is coarse; body texture has some edge roughness.
 - With straight arms the held sword floats near the hand (see `hand_follows_wrist`).
 - Shapes keep the game's materials; normal/roughness/occlusion maps are neutral.
