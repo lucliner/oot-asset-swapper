@@ -236,7 +236,7 @@ def patch_model(src, slots, keep_others=False, bone_positions=None, inv_bind=Non
         put32(u64(s.fvtx + 0x30), n * s.stride)
         # FSHP: the 3 LOD meshes share one index list and one vertex set
         mesh = u64(s.off + 0x18)
-        for lod in range(3):
+        for lod in range(max(1, b[s.off + 0x5b])):
             q = mesh + lod * 0x38
             sub = u64(q)
             put32(sub, 0); put32(sub + 4, count)

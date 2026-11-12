@@ -41,12 +41,18 @@ NO_AXIS = {'Waist'}          # sits where the legs and the spine start: moved to
 MIN_BONE = 0.03              # metres: a bone shorter than this has no usable direction
 
 
+def _clean(name):
+    """The joint's own name: no rig prefix ('mixamorig:', 'Armature|') and no trailing export index ('_030')."""
+    n = re.split(r'[:|]', name)[-1]
+    return re.sub(r'[_.\-]?\d{2,}$', '', n)
+
+
 def _norm(name):
     return re.sub(r'[^a-z0-9]', '', name.lower())
 
 
 def _side(name):
-    n = name.lower()
+    n = _clean(name).lower()
     if re.search(r'(^|[_.\-\s])(l|left)($|[_.\-\s0-9])|left|\.l$|_l$', n):
         return 'L'
     if re.search(r'(^|[_.\-\s])(r|right)($|[_.\-\s0-9])|right|\.r$|_r$', n):
@@ -55,6 +61,7 @@ def _side(name):
 
 
 def _role(name):
+    name = _clean(name)
     base = re.sub(r'(^|[_.\-\s])(l|r|left|right)($|[_.\-\s])', ' ', name.lower())
     base = re.sub(r'(left|right)', '', base)
     n = _norm(base)
@@ -72,10 +79,14 @@ def auto_map(rig, game_bones):
     """{source joint name: game bone name} for the joints whose names say what they are."""
     game = {b.name: b for b in game_bones}
     out, taken = {}, {}
+    # Mixamo-style rigs say UpLeg / Leg / Foot: there "Leg" is the shin, not the thigh
+    thigh_named_up = any(_norm(_clean(n)).endswith('upleg') or _norm(_clean(n)).endswith('upperleg') for n in rig.names)
     for name in rig.names:
-        if SKIP.search(name) and _role(name) != 'Wrist':
+        if SKIP.search(_clean(name)) and _role(name) != 'Wrist':
             continue
         role = _role(name)
+        if role == 'Leg_1' and thigh_named_up and _norm(_clean(name)).replace('left', '').replace('right', '') == 'leg':
+            role = 'Leg_2'
         if role is None:
             continue
         side = _side(name)

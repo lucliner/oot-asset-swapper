@@ -1,4 +1,4 @@
-"""Asset Swap for Sheikah: replace character models with models from elsewhere.
+"""Asset Swapper: replace character models with models from elsewhere.
 
     python -I tools/assetswap inspect  <romfs> <Model/File.bfres.zs> [--bones]
     python -I tools/assetswap preview <romfs> <Model/File.bfres.zs> <out.png> [--yaw deg]

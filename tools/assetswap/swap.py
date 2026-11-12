@@ -105,6 +105,12 @@ class Plan:
         self.f = Bfres(self.src)
         self.W = world_matrices(self.f)
         self.meshes, self.rig = load_model(input_path, log=log)
+        offs = self.profile.get('joint_offsets') or {}          # joints the user dragged in the preview (the model's own units)
+        if self.rig is not None and offs:
+            self.rig.rest = np.array(self.rig.rest, np.float64)
+            for i, n in enumerate(self.rig.names):
+                if n in offs:
+                    self.rig.rest[i][:3, 3] += np.asarray(offs[n], np.float64)
         p = self.profile
         self.top = max(float(self.f.read_attr(s, '_p0')[:, 1].max()) for s in self.f.shapes if s.vertex_count and s.skin_count > 1)
         if self.rig is not None:
@@ -118,18 +124,46 @@ class Plan:
         self._build()
 
     # -- fit
-    def _fit(self):
+    def _rotation(self):
+        """The model's rotation: a turn about y (rotate_y), then the 3x3 `rotation` the preview's gizmo sets, if any."""
         p = self.profile
         ry = np.radians(p.get('rotate_y') or 0.0)
         R = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+        if p.get('rotation'):
+            R = np.asarray(p['rotation'], np.float64).reshape(3, 3) @ R
+        return R
+
+    def _fit_for(self, R, sc=None):
+        """(scale, t) for the rotation R: the model stands on y = 0, centred in x, plus the profile's offset."""
         P = np.concatenate([m.pos for m in self.meshes]).astype(np.float64) @ R.T
         lo, hi = P.min(0), P.max(0)
-        sc = p.get('scale') or self.top / max(hi[1] - lo[1], 1e-6)
-        t = np.array([-(lo[0] + hi[0]) / 2 * sc, -lo[1] * sc, 0.0]) + np.array(p.get('offset') or (0, 0, 0))
+        self.auto_scale = self.top / max(hi[1] - lo[1], 1e-6)          # the scale that makes it as tall as the game's model
+        sc = sc or self.auto_scale
+        return sc, np.array([-(lo[0] + hi[0]) / 2 * sc, -lo[1] * sc, 0.0])
+
+    def _fit(self):
+        p = self.profile
+        R = self._rotation()
+        sc, base = self._fit_for(R, p.get('scale'))
+        t = base + np.array(p.get('offset') or (0, 0, 0))
         M = np.eye(4)
         M[:3, :3] = R * sc
         M[:3, 3] = t
+        self.fit_R = R
         return sc, R, t, M
+
+    def refit(self, L, tvec):
+        """New profile values (scale, rotation, offset) that give the fitted model the world transform p -> L p + tvec on top of
+        what it has now (the preview's gizmo: L is a rotation times a uniform scale)."""
+        k = float(np.cbrt(abs(np.linalg.det(L))))
+        Rd = L / k
+        sc = self.scale * k
+        R_new = Rd @ self.fit_R
+        _sc, base = self._fit_for(R_new, sc)
+        t_now = self.M[:3, 3]
+        t_new = L @ t_now + tvec
+        rot0 = np.asarray(self.profile.get('rotation') or np.eye(3), np.float64).reshape(3, 3)
+        return {'scale': float(sc), 'rotation': [float(x) for x in (Rd @ rot0).reshape(-1)], 'offset': [float(x) for x in (t_new - base)]}
 
     def _merge_parts(self, parts, skip):
         """Parts named in the profile's merge_parts (e.g. ["damage"]) are joined to the biggest textured part instead of
@@ -207,6 +241,7 @@ class Plan:
         p, f, W, log = self.profile, self.f, self.W, self.log
         sc, R, t, M = self._fit()
         self.M, self.scale = M, sc
+        self.fit_t = M[:3, 3].copy()
         log('fit: scale %.4f, rotate_y %.0f deg' % (sc, p.get('rotate_y') or 0))
         max_matrix = max(b.smooth for b in autoskin.core_bones(f))
         need_float = any(m.uv is not None and (m.uv.min() < -1e-4 or m.uv.max() > 1 + 1e-4) for m in self.meshes)
@@ -794,6 +829,43 @@ class Plan:
             self.weapon_delta[side] = R.T @ (self.palm[side] - where)
             self.log('  %s: held models shifted %.1f cm to the hand of the model' % (wname, np.linalg.norm(self.palm[side] - where) * 100))
 
+    def original_triangles(self):
+        """The game's own model in its bind pose, (n, 3, 3): what the imported model is being fitted to."""
+        if getattr(self, '_orig_tris', None) is None:
+            f, W = self.f, self.W
+            out = []
+            for sh in f.shapes:
+                if not sh.vertex_count:
+                    continue
+                pos = f.read_attr(sh, '_p0')[:, :3].astype(np.float64)
+                if sh.skin_count <= 1:
+                    h = np.c_[pos, np.ones(len(pos))]
+                    if sh.skin_count == 0 or not sh.skin_bones:
+                        pos = (h @ W[sh.bone].T)[:, :3]
+                    else:
+                        vb = f.read_attr(sh, '_i0')[:, 0].astype(int)
+                        q = np.empty_like(pos)
+                        for k in np.unique(vb):
+                            sel = vb == k
+                            q[sel] = (h[sel] @ W[f.matrix_to_bone[k]].T)[:, :3]
+                        pos = q
+                idx = f.indices(sh).reshape(-1, 3)
+                out.append(pos[idx])
+            self._orig_tris = np.concatenate(out) if out else np.zeros((0, 3, 3))
+        return self._orig_tris
+
+    def joint_handles(self):
+        """[(joint name, its position in the fitted model, position of the game bone it drives)] for the draggable joints."""
+        out = []
+        if self.rig is None:
+            return out
+        gi = {b.name: b.index for b in self.f.bones}
+        for i, n in enumerate(self.rig.names):
+            g = self.bone_map.get(n)
+            if g in gi:
+                out.append((n, (self.M @ np.append(self.rig.position(i), 1.0))[:3], self.W[gi[g]][:3, 3].copy()))
+        return out
+
     def overlays(self):
         """Lines/points for the preview: the game's body bones (cyan) and, for a rigged source, each mapped joint's fitted
         position (orange) with a line to the game bone it is mapped to, so a wrong mapping shows as a long line."""
@@ -829,10 +901,15 @@ class Plan:
         with open(dest, 'wb') as fh:
             fh.write(packed)
         back = Bfres(rom.decompress(open(dest, 'rb').read()))
+        grown = len(rom.decompress(open(dest, 'rb').read()))
+        if grown > len(self.src):
+            # the engine reserves memory for a model from the resource size table: a bigger model needs its entry raised
+            import restbl
+            restbl.patch(rom, mod_dir, {self.target_rel: grown}, log)
         assert len(back.shapes) == len(f.shapes) and [b.name for b in back.bones] == [b.name for b in f.bones]
         log('wrote %s (%d bytes; the original is %d)' % (dest, len(packed), os.path.getsize(rom.path(self.target_rel))))
         hide = list(self.profile.get('hide_models') or [])
-        if self.profile.get('hide_worn', True):
+        if self.profile.get('hide_worn', True) and os.path.basename(self.target_rel).startswith('Player_'):
             for n in WORN_EQUIPMENT:
                 rel = 'Model/%s.%s.bfres.zs' % (n, n)
                 if rel not in hide and os.path.exists(rom.path(rel)):
@@ -922,13 +999,13 @@ class Plan:
             out.append(im[y, x, :3])
         return np.concatenate(out) if out else np.zeros((0, 3), np.uint8)
 
-    def triangles(self, pose=False):
-        """The planned model's triangles (n, 3, 3), bind pose or the test pose (linear blend skinning)."""
+    def triangle_parts(self, pose=False):
+        """[(slot, (n, 3, 3) triangles)] of the planned model, bind pose or the test pose (linear blend skinning)."""
         from posing import pose_matrices, rot_about  # noqa: F401
         f = self.f
         M = pose_matrices(f, self.W) if pose else None
         out = []
-        for sl in self.slots.values():
+        for si, sl in self.slots.items():
             P = np.asarray(sl.pos, np.float64)
             if pose:
                 h = np.c_[P, np.ones(len(P))]
@@ -940,8 +1017,36 @@ class Plan:
                         if sel.any():
                             Q[sel] += Wt[sel, c, None] * (h[sel] @ M[f.matrix_to_bone[m_]].T)[:, :3]
                 P = Q
-            out.append(P[np.asarray(sl.tris)])
+            out.append((si, P[np.asarray(sl.tris)]))
+        return out
+
+    def triangles(self, pose=False):
+        """The planned model's triangles (n, 3, 3), bind pose or the test pose."""
+        out = [t for _si, t in self.triangle_parts(pose)]
         return np.concatenate(out) if out else np.zeros((0, 3, 3))
+
+    def textured_parts(self, pose=False, max_side=1024):
+        """[{'tris', 'uv', 'tex'}] per slot for the OpenGL preview: the slot's own image on its own UVs."""
+        from PIL import Image
+        cache = self.__dict__.setdefault('_tex_cache', {})
+        out = []
+        for si, tris in self.triangle_parts(pose):
+            sl = self.slots[si]
+            tex = None
+            if sl.texture and sl.uv is not None and os.path.exists(sl.texture):
+                if sl.texture not in cache:
+                    im = Image.open(sl.texture).convert('RGB')
+                    if max(im.size) > max_side:
+                        k = max_side / max(im.size)
+                        im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS)
+                    cache[sl.texture] = np.asarray(im, np.uint8)
+                tex = cache[sl.texture]
+            uv = None if sl.uv is None else np.asarray(sl.uv, np.float64)[np.asarray(sl.tris)].copy()
+            if uv is not None:
+                uv[..., 1] = 1.0 - uv[..., 1]                      # the slot's v counts rows down the image; OpenGL's counts up
+            out.append({'tris': tris, 'uv': uv if tex is not None else None, 'tex': tex,
+                        'colors': None if tex is not None else np.full((len(tris), 3), 170, np.uint8)})
+        return out
 
 
 def swap(romfs_dir, target_rel, input_path, mod_dir, scale=None, rotate_y=0.0, offset=(0, 0, 0), slots=None, textures=True,

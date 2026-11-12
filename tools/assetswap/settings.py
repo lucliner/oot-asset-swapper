@@ -6,7 +6,7 @@ import sys
 
 def _path():
     base = os.environ.get('APPDATA') or os.path.expanduser('~')
-    return os.path.join(base, 'SheikahAssetSwapper', 'settings.json')
+    return os.path.join(base, 'AssetSwapper', 'settings.json')
 
 
 def load():
@@ -23,10 +23,17 @@ def save(d):
 
 
 def find_game():
-    """The game folder (the one holding sheikah.exe, a romfs folder and the mods folder): where the program sits, the last one
-    used, or the usual place. Returns None when none is found."""
+    """The game folder (the one holding the recomp's program, a romfs folder and the mods folder): where this program sits, the
+    last one used, or a folder beside it that has a romfs. Returns None when none is found."""
     here = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-    cands = [here, os.path.dirname(here), load().get('game'), r'E:\ZeldaRecomp\sheikah']
+    parent = os.path.dirname(here)
+    beside = []
+    for root in (parent, os.path.dirname(parent)):             # the folders next to the program, one and two levels up
+        try:
+            beside += [os.path.join(root, d) for d in sorted(os.listdir(root))]
+        except OSError:
+            pass
+    cands = [here, parent, load().get('game')] + beside
     for c in cands:
         if c and os.path.isdir(os.path.join(c, 'romfs')):
             return c

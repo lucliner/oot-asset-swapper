@@ -1,3 +1,5 @@
 numpy
 pillow
 zstandard
+moderngl
+texture2ddecoder

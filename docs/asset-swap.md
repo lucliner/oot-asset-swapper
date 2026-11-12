@@ -25,7 +25,7 @@ Run `Asset Swapper.exe` (built by `tools/assetswap/build_exe.bat`; put the folde
 | **Fit & attachments** | scale (default: the target's height), turn, offset; the weapon points (`Weapon_L`, `Weapon_R`, the sheath `Weapon_Root`): automatic (the end of the arm or wing), unchanged, or typed in. *Joint fit* (0 keeps the model's own proportions, 1 puts its joints exactly on the game's; low for torso and legs so they are not squashed), *arm drop* and *hand curl* (arms hang lower and the hands bend at the wrist instead of sticking out like wings). |
 | **Equipment** | models of Link's equipment to hide. `Item_AgonyStone` is listed: the Stone of Agony is its own small model, and on a body smaller than Link's it sits inside it and glows through. The shield and sword are mounted on `Pod_A` and `Pod_B` on the back: they are pushed out of the model until clear of its surface (*leaving ... m clear*), and each can be moved by hand (metres, model space). |
 
-5. **Build mod** writes `sheikah\mods\<name>\romfs\...` and saves your corrections as `asset_swap_profile.json` there
+5. **Build mod** writes `<game folder>\mods\<name>\romfs\...` and saves your corrections as `asset_swap_profile.json` there
    (load it again with *Load profile*). Start the game; rename the mod folder with a leading `-` to switch it off.
 
 The same from the command line: `python -I tools/assetswap swap <romfs> Model/Player_Child.Player_Child.bfres.zs
@@ -84,3 +84,13 @@ The layout notes the writer relies on are in the header of `tools/assetswap/bfre
 - **Held weapons** (swords, Deku stick, hammer in the right hand; bow and slingshot in the left): the animations set the weapon bones' positions, so the models themselves are shifted in the mod (`shift_held`, default on) by the distance from the game's weapon point on the new skeleton to the centre of the model's hand, measured before the arm weights are stiffened.
 - **`armpit_relief`** (default 1, 0 = off): torso vertices that the model's weights hand to the arm (chest and ribs under the sleeve) follow the arm when the game swings it down, which sucks the armpit in. Everything beside the shoulder that is farther from the arm's axis than the arm is thick gives its arm weight back to `Spine_2`.
 - **`hand_follows_wrist`** (0..1, default 0): 0 keeps the hand stiff with the arm (straight arms, but a sword mounted on the animated wrist floats a little off the hand); 1 lets the hand turn with the wrist (the sword stays in it, but Link's elbow and wrist bends fold a short thick arm). **`shift_held`** (default off) shifts the sword, hammer and bow models by the difference between the model's hand and Link's; in testing it did not help.
+
+## Works with any recomp of the game
+
+Any static recompilation of Ocarina of Time for Switch 2 (Hookshot and the projects built on it) uses the same romfs and the
+same mod layout (`<game folder>/mods/<name>/romfs/...`). Point *Game romfs* at the `romfs` folder of the one you use: the mod
+goes into the `mods` folder beside it. The tool finds `romfs` beside the program, in the last folder used, or you browse to it.
+
+A model bigger than the game's own needs a larger entry in the resource size table, or the game goes on without the file.
+The tool writes that table into the mod for you. Only one mod's table is used by the game, so if several mods each make a file
+bigger, keep one table with all the entries in the mod whose folder name sorts last.
